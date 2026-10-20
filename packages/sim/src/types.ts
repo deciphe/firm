@@ -14,6 +14,8 @@ export interface CardInstance {
   payouts: number;
   stalls: number;
   stalledUntil: number;
+  /** Permanent fee bonus earned over the run (Upsell Desk). */
+  bonus: number;
 }
 
 export interface PayoutRequest {

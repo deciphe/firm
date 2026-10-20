@@ -8,7 +8,7 @@ import type { Candle, CardInstance, GameState } from '../src/index.ts';
 // ---------------------------------------------------------------- helpers
 
 function card(uid: number, def: string, extra: Partial<CardInstance> = {}): CardInstance {
-  return { uid, def, progress: 0, age: 0, revealed: false, payouts: 0, stalls: 0, stalledUntil: 0, ...extra };
+  return { uid, def, progress: 0, age: 0, revealed: false, payouts: 0, stalls: 0, stalledUntil: 0, bonus: 0, ...extra };
 }
 
 /** A run with a hand-built grid and a forced candle for the next tap. */
@@ -53,6 +53,16 @@ test('step never mutates the previous state', () => {
   const before = JSON.stringify(s);
   tap(s);
   assert.equal(JSON.stringify(s), before);
+});
+
+test('the Payout Desk always has a way out, even broke with no excuses', () => {
+  const s = tap(setup({ 0: card(100, 'whale', { progress: 10, stalls: 2 }) }, 'chop'));
+  s.cash = 0;
+  s.excuses = [];
+  const moves = legalActions(s);
+  assert.deepEqual(moves, [{ type: 'payout', decision: 'deny' }]);
+  const after = step(s, moves[0]!);
+  assert.ok(after.trust < BALANCE.startTrust - 0.5);
 });
 
 test('illegal actions throw', () => {
@@ -219,6 +229,31 @@ test('Copy-Trade Detector exposes every copy ring and bot', () => {
 test('Sales Closer fills an empty neighbour every day', () => {
   const s = tap(setup({ 6: 'closer' }, 'chop'));
   assert.equal(s.grid.filter(Boolean).length, 2);
+});
+
+test('Trust multiplies fees', () => {
+  const low = setup({ 0: 'gambler' }, 'chop');
+  low.trust = 1;
+  const high = setup({ 0: 'gambler' }, 'chop');
+  high.trust = 5;
+  assert.equal(incomeOf(tap(low), 100), 18);
+  assert.equal(incomeOf(tap(high), 100), 42);
+});
+
+test('Upsell Desk permanently raises adjacent fees', () => {
+  let s = setup({ 0: 'gambler', 1: 'upsell' }, 'chop');
+  s = tap(s);
+  assert.equal(findCard(s, 100)?.card.bonus, 1);
+  s = step(s, { type: 'draft', pick: null });
+  s.forecast = { chop: 1, up: 0, down: 0, news: 0 };
+  s = tap(s);
+  assert.equal(incomeOf(s, 100), 31);
+});
+
+test('Payout Proof Wall grows fees with every honoured payout', () => {
+  const s = setup({ 0: 'gambler', 19: 'proofwall' }, 'chop');
+  s.stats.payoutsPaid = 10;
+  assert.equal(incomeOf(tap(s), 100), 42);
 });
 
 test('Lawyer halves Heat from denials', () => {

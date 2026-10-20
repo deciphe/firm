@@ -10,6 +10,8 @@ export interface TraderOutcome {
   /** Blew up and rebought: progress goes back to zero. */
   reset?: boolean;
   heat?: number;
+  /** Permanent fee bonus to add after today's fees are counted. */
+  upsell?: number;
 }
 
 export interface TraderCtx {
@@ -239,6 +241,17 @@ export const CARDS: Record<string, CardDef> = {
     preDay: ({ grid, reveal }) => {
       for (const c of grid) if (c && (c.def === 'copyring' || c.def === 'bot')) reveal(c);
     },
+  },
+  upsell: {
+    id: 'upsell', name: 'Upsell Desk', kind: 'staff', rarity: 'uncommon', draftWeight: 3,
+    blurb: 'Every adjacent trader who pays today pays +1 more, forever.',
+    aura: ({ neighbors }) => {
+      for (const n of neighbors) if (n.card && n.outcome && n.outcome.cash > 0) n.outcome.upsell = (n.outcome.upsell ?? 0) + 1;
+    },
+  },
+  proofwall: {
+    id: 'proofwall', name: 'Payout Proof Wall', kind: 'staff', rarity: 'rare', draftWeight: 2,
+    blurb: 'All fees +4% for every payout you have honoured this run.',
   },
   lawyer: {
     id: 'lawyer', name: 'Lawyer', kind: 'staff', rarity: 'rare', draftWeight: 2,

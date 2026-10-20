@@ -53,7 +53,7 @@ function rowOf(grid: (CardInstance | null)[], index: number): (CardInstance | nu
 }
 
 function newCard(s: GameState, defId: string): CardInstance {
-  return { uid: s.nextUid++, def: defId, progress: 0, age: 0, revealed: false, payouts: 0, stalls: 0, stalledUntil: 0 };
+  return { uid: s.nextUid++, def: defId, progress: 0, age: 0, revealed: false, payouts: 0, stalls: 0, stalledUntil: 0, bonus: 0 };
 }
 
 export function findCard(s: GameState, uid: number): { card: CardInstance; index: number } | null {
@@ -109,6 +109,11 @@ export function valuation(s: GameState): number {
   return Math.max(0, Math.round(s.cash + 15 * avg * (s.trust / 3) - liability(s)));
 }
 
+/** Trust 3 = x1.0 fees, 5 = x1.4, 1 = x0.6, 0 = x0.4. */
+export function trustMultiplier(trust: number): number {
+  return Math.round((0.4 + 0.2 * trust) * 100) / 100;
+}
+
 // ------------------------------------------------------------------ new run
 
 export function newRun(seed: number): GameState {
@@ -160,6 +165,7 @@ export function legalActions(s: GameState): Action[] {
       const found = findCard(s, req.uid);
       if (found && found.card.stalls < 2) out.push({ type: 'payout', decision: 'stall' });
       for (const ex of new Set(s.excuses)) out.push({ type: 'payout', decision: 'deny', excuse: ex });
+      out.push({ type: 'payout', decision: 'deny' }); // ghost them: always possible, always painful
       break;
     }
     case 'draft':
@@ -245,6 +251,15 @@ function resolveDay(s: GameState, rng: Rng): void {
   });
 
   s.grid.forEach((c, i) => { if (c) cardDef(c.def).aura?.(auraCtx(i, c, outcomes)); });
+
+  // Global fee multiplier: customers spend more with a firm they trust; Proof Walls reward honoured payouts.
+  const proofWalls = countOnGrid('proofwall');
+  const feeMul = trustMultiplier(s.trust) * (1 + 0.04 * s.stats.payoutsPaid * proofWalls);
+  s.grid.forEach((c, i) => {
+    const o = outcomes[i];
+    if (c && o && o.cash > 0) o.cash = Math.round((o.cash + c.bonus) * feeMul);
+    if (c && o?.upsell) c.bonus += o.upsell;
+  });
 
   let income = 0;
   let heat = 0;
@@ -335,10 +350,18 @@ function decidePayout(s: GameState, rng: Rng, decision: 'pay' | 'stall' | 'deny'
     s.trust = clamp(s.trust - 0.05 * card.stalls, 0, BALANCE.maxTrust);
     s.heat = clamp(s.heat + 2, 0, BALANCE.maxHeat);
     if (card.stalls === 2) post(s, '@chartcrime', 'Day 6 of "your payout is processing." Starting to wonder.', 'bad');
+  } else if (excuse === undefined) {
+    // Ghost them: no excuse, no reply. The worst look a firm can have.
+    const heatMul = hasStaff(s, 'lawyer') ? 0.5 : 1;
+    s.grid[index] = null;
+    s.stats.denied += req.amount;
+    s.stats.payoutsDenied += 1;
+    s.trust = clamp(s.trust - (def.fraud && card.revealed ? 0.1 : 0.7), 0, BALANCE.maxTrust);
+    s.heat = clamp(s.heat + 14 * heatMul, 0, BALANCE.maxHeat);
+    post(s, rng.pick(['@fundedfrank', '@nq_nate', '@chartcrime']), `Payout request ignored. Account closed. No email, nothing.`, 'bad');
   } else {
-    const exId = excuse ?? s.excuses[0];
-    need(exId !== undefined && s.excuses.includes(exId), 'no such excuse in hand');
-    const ex = excuseDef(exId as string);
+    need(s.excuses.includes(excuse), 'no such excuse in hand');
+    const ex = excuseDef(excuse);
     s.excuses.splice(s.excuses.indexOf(ex.id), 1);
     const uses = s.stats.excuseUses[ex.id] ?? 0;
     s.stats.excuseUses[ex.id] = uses + 1;
