@@ -15,8 +15,11 @@ When the doc and this file disagree, ask the user.
 ## Stack
 
 - TypeScript (strict) everywhere. pnpm workspaces. Node 20+.
-- Phaser (latest stable) for rendering, input, tweens, particles and audio.
-- Vite for dev server and builds. Vitest for unit tests. Playwright for screenshots and end-to-end tests.
+- Rendering: plain DOM + CSS for the board and cards, canvas for pixel sprites, Web Audio for synthesised
+  sound, Web Animations for juice. Decided over Phaser: a 20-tile card game gains nothing from an engine and
+  loses crisp text, small downloads and easy phone layouts. Add an engine later only for an effect DOM can't do.
+- esbuild bundles the game into one self-contained HTML page (`apps/game/build.mjs`).
+- Tests: `node:test` via `tsx --test`. Playwright (Python) drives `apps/game/shoot.py` for screenshot audits.
 - Capacitor to wrap the web build as iOS and Android apps (later phase).
 - Web build deploys to Cloudflare Pages.
 
@@ -26,7 +29,7 @@ When the doc and this file disagree, ask the user.
 firm/
   packages/sim/    pure TypeScript game rules engine. NO Phaser, NO DOM, NO browser APIs.
   packages/bots/   headless bot players + balance runner (CLI, runs in Node)
-  apps/game/       Phaser client. Renders sim state, sends player actions. No game rules here.
+  apps/game/       web client. Renders sim state, sends player actions. No game rules here.
   design/          design tokens, sprite sources, screenshot audits
 ```
 
@@ -55,7 +58,7 @@ firm/
 ## Quality bar (every change)
 
 - `tsc --noEmit` clean in strict mode. ESLint clean. Prettier applied.
-- `vitest` all green. Every card effect has a unit test.
+- `pnpm test` all green (node:test). Every card effect has a unit test.
 - Balance runner re-run after any change to numbers or card effects; report the before/after.
 - Small commits with clear messages. Never commit secrets.
 
@@ -63,8 +66,8 @@ firm/
 
 You must look at what you build before calling it done.
 
-1. Run the dev server and use the Playwright MCP to open the game at phone sizes 390x844 and 360x640.
-   Use the debug hook to reach each key state: start, mid-run, payout desk, interview, death card.
+1. `node apps/game/build.mjs && python3 apps/game/shoot.py` opens the game at phone sizes 390x844 and
+   360x640 and uses the debug hook to reach each key state: start, placing, fee pops, draft, payout, death.
 2. Take a screenshot of each state and look at it. For animations, take a sequence of frames.
 3. Keep a Playwright visual regression suite (`toHaveScreenshot`) for every key state so later changes
    can't silently break a screen.
@@ -75,8 +78,13 @@ You must look at what you build before calling it done.
    - Primary action reachable by one thumb in the bottom third of the screen.
    - One focal point per screen. Juice only on money moments.
    - Text contrast meets WCAG AA on the dark background.
-   - Pixel art stays pixel-perfect (`pixelArt: true`, integer scaling, no blur).
+   - Pixel art stays pixel-perfect (`image-rendering: pixelated`, integer scaling, no blur).
 5. Save before/after screenshots in `design/audits/` with a one-line note on what changed and why.
+
+## Balance results
+
+Latest 10,000-game run per bot is in `design/balance-v1.txt`. Targets: careless play dies ~day 15,
+always-pay ~20 (goes broke), always-deny ~25 (Trust collapse), smart ~35 with a tail past 60.
 
 ## Look and feel
 
