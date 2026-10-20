@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  BALANCE, CARDS, IllegalAction, findCard, legalActions, newRun, step, valuation,
+  BALANCE, CARDS, IllegalAction, findCard, legalActions, newRun, offerPrice, step, valuation,
 } from '../src/index.ts';
 import type { Candle, CardInstance, GameState } from '../src/index.ts';
 
@@ -27,10 +27,10 @@ const incomeOf = (s: GameState, uid: number): number => s.lastReport?.results.fi
 
 // ---------------------------------------------------------------- core rules
 
-test('a new run starts with six traders, $300 and two excuses', () => {
+test('a new run starts with six traders, a little cash and two excuses', () => {
   const s = newRun(1);
   assert.equal(s.grid.filter(Boolean).length, 6);
-  assert.equal(s.cash, 300);
+  assert.equal(s.cash, BALANCE.startCash);
   assert.equal(s.excuses.length, 2);
   assert.equal(s.phase, 'morning');
 });
@@ -53,6 +53,30 @@ test('step never mutates the previous state', () => {
   const before = JSON.stringify(s);
   tap(s);
   assert.equal(JSON.stringify(s), before);
+});
+
+test('hiring costs money by rarity and you cannot overspend', () => {
+  let s = tap(setup({}, 'chop'));
+  s.cash = 100;
+  s.offers = [{ kind: 'card', id: 'gambler' }, { kind: 'card', id: 'whale' }, { kind: 'excuse', id: 'kyc' }];
+  const picks = legalActions(s).filter((a) => a.type === 'draft' && a.pick !== null).map((a) => (a as { pick: number }).pick);
+  assert.deepEqual(picks, [0, 2]);
+  assert.throws(() => step(s, { type: 'draft', pick: 1 }), IllegalAction);
+  s = step(s, { type: 'draft', pick: 0, slot: 0 });
+  assert.equal(s.cash, 100 - BALANCE.prices.common!);
+});
+
+test('rerolls get more expensive each time in the same shop', () => {
+  let s = tap(setup({}, 'chop'));
+  s.cash = 1000;
+  s = step(s, { type: 'reroll' });
+  s = step(s, { type: 'reroll' });
+  assert.equal(s.cash, 1000 - BALANCE.rerollBase - (BALANCE.rerollBase + BALANCE.rerollStep));
+});
+
+test('hidden fraud is priced like an ordinary customer', () => {
+  assert.equal(offerPrice({ kind: 'card', id: 'hedger' }), BALANCE.prices.common);
+  assert.equal(offerPrice({ kind: 'card', id: 'detector' }), BALANCE.prices.rare);
 });
 
 test('the Payout Desk always has a way out, even broke with no excuses', () => {
@@ -91,7 +115,7 @@ test('paying payroll grows the next bill and moves the due day', () => {
   s = tap(s);
   s = step(s, { type: 'draft', pick: null });
   assert.equal(s.cash, 5000 - BALANCE.payrollStart);
-  assert.equal(s.payroll.amount, BALANCE.payrollStart * BALANCE.payrollGrowth);
+  assert.equal(s.payroll.amount, Math.round((BALANCE.payrollStart * BALANCE.payrollGrowth) / 10) * 10);
   assert.equal(s.payroll.dueDay, BALANCE.cycleDays * 2);
   assert.equal(s.day, BALANCE.cycleDays + 1);
 });
@@ -351,7 +375,8 @@ test('every draftable card and excuse can actually be offered', () => {
   s = tap(s);
   while (s.phase === 'payout') s = step(s, { type: 'payout', decision: 'stall' });
   for (let k = 0; k < 400; k++) {
-    s.rerolls = 1;
+    s.rerolls = 0;
+    s.cash = 1e6;
     s = step(s, { type: 'reroll' });
     for (const o of s.offers) seen.add(`${o.kind}:${o.id}`);
   }

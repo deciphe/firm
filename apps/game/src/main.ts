@@ -1,5 +1,5 @@
 import {
-  BALANCE, CARDS, EXCUSES, cardDef, displayName, excuseDef, findCard, legalActions, newRun, seedFromString, step, trustMultiplier, valuation,
+  BALANCE, CARDS, EXCUSES, cardDef, displayName, excuseDef, findCard, legalActions, newRun, offerPrice, rerollPrice, seedFromString, step, trustMultiplier, valuation,
 } from '@firm/sim';
 import type { Action, Candle, CardInstance, GameState, Offer } from '@firm/sim';
 import { stippleArt, startSky } from './stipple.ts';
@@ -53,6 +53,7 @@ function newGame(mode: Mode): void {
     if (g) g.progress = 6;
     s = { ...s, grid };
   }
+  if (mode === 'tutorial') s = { ...s, cash: 500 };
   ui = { s, mode, firm: mode === 'tutorial' ? 'Your first firm' : firmName(seed), tape: [], bestIncome: 0, selected: null, revealed: mode === 'tutorial' ? [] : [...ALL_REVEALS], score: { base: 0, mult: 1, today: 0 } };
   shownCash = s.cash;
   closeOverlays();
@@ -139,7 +140,7 @@ function renderRun(): void {
   sky.setHeat(s.heat / 100);
   $('#day').textContent = String(s.day);
   $('#cycle').textContent = String(s.payroll.cycle);
-  $('#rerolls').textContent = String(s.rerolls);
+  $('#rerolls').textContent = money(rerollPrice(s));
   $('#booked').textContent = String(s.grid.filter(Boolean).length);
   setScore(ui.score);
 
@@ -213,12 +214,12 @@ function renderShop(): void {
     return;
   }
   shop.innerHTML = `<div class="shop-in">
-    <div class="shop-head"><b>Hire</b><small>one card a day · staff boost their 8 neighbours</small></div>
+    <div class="shop-head"><b>Hire</b><small>cash ${money(s.cash)} · payroll ${money(s.payroll.amount)} in ${Math.max(0, s.payroll.dueDay - s.day)}d</small></div>
     <div class="offers">${s.offers.map((o, i) => `
-      <button class="offer r-${offerRarity(o)}" data-o="${i}" style="--i:${i}">
+      <button class="offer r-${offerRarity(o)}${s.cash < offerPrice(o) ? ' broke' : ''}" data-o="${i}" style="--i:${i}" ${s.cash < offerPrice(o) ? 'aria-disabled="true"' : ''}><span class="price">${money(offerPrice(o))}</span>
         <span class="otag">${offerTag(o)}</span><img src="${stippleArt(offerArt(o))}" alt=""><b>${esc(offerName(o))}</b><small>${esc(offerBlurb(o))}</small>
       </button>`).join('')}</div>
-    <div class="shop-row"><button class="btn2" id="sh-reroll" ${s.rerolls > 0 ? '' : 'disabled'}>Reroll · ${s.rerolls}</button><button class="btn2 gold" id="sh-skip">Skip</button></div>
+    <div class="shop-row"><button class="btn2" id="sh-reroll" ${s.cash >= rerollPrice(s) ? '' : 'disabled'}>Reroll · ${money(rerollPrice(s))}</button><button class="btn2 gold" id="sh-skip">Skip</button></div>
   </div>`;
   shop.querySelectorAll<HTMLButtonElement>('.offer').forEach((b) => { b.onclick = () => chooseOffer(Number(b.dataset.o)); });
   $('#sh-reroll').onclick = () => { if (!gate('reroll')) return; J.tick(); act({ type: 'reroll' }); };
@@ -257,7 +258,9 @@ function afterStep(prev: GameState): void {
 
 function chooseOffer(i: number): void {
   const o = ui.s.offers[i];
-  if (!o || busy || !gate('select')) return;
+  if (!o || busy) return;
+  if (ui.s.cash < offerPrice(o)) { J.loss(); flash(`Can't afford ${offerName(o)} · ${money(offerPrice(o))}`); return; }
+  if (!gate('select')) return;
   J.unlockAudio(); J.tick();
   if (o.kind === 'excuse' || o.id === 'botfarm') {
     act({ type: 'draft', pick: i }, o.kind === 'excuse' ? `${offerName(o)} added to your excuses` : 'Bulk order placed');
@@ -562,7 +565,7 @@ function showHow(): void {
       <p class="eyebrow" id="how-title">How FIRM works</p>
       <ol class="how">
         <li><span><b>Open the market.</b> Each day prints one candle. Every customer on the book reacts and pays you <b class="k-chip">fees</b>.</span></li>
-        <li><span><b>Staff multiply.</b> Staff boost the 8 cards around them. Placement builds your <b class="k-mult">mult</b>. Fees × mult = today's take.</span></li>
+        <li><span><b>Hire carefully.</b> One card a day, paid in cash. Staff boost the 8 cards around them and build your <b class="k-mult">mult</b>. Fees × mult = today's take. Every hire is cash you won't have at payroll.</span></li>
         <li><span><b>Trends pay them.</b> Chop days mostly pay you. Trend days fill traders' dots. A full card wants a <b class="k-gold">payout</b>.</span></li>
         <li><span><b>Pay, stall, or deny.</b> Paying builds Trust, which multiplies every fee. Denying keeps cash but burns Trust and adds Heat. Fraud you've exposed can be denied for free.</span></li>
         <li><span><b>Make payroll.</b> Every 5 days, and it grows each time. Miss it and the firm closes. Heat at 100 closes it too.</span></li>
@@ -705,7 +708,7 @@ async function tutorial(): Promise<void> {
   await say({ text: 'Open the market. Every day prints one candle, and every card reacts.', target: '#btn-tap', hint: 'Tap OPEN MARKET', wait: 'tap-done', allow: ['tap'] }); if (!live()) return;
   offers([{ kind: 'card', id: 'affiliate' }, { kind: 'card', id: 'gambler' }, { kind: 'excuse', id: 'kyc' }]);
   await say({ text: 'Blue is fees, clay is your multiplier. Fees times mult is what you made today.', target: '.score' }); if (!live()) return;
-  await say({ text: 'After every day you hire one card. Take the Affiliate. Staff boost the 8 cards around them.', target: '.offers', hint: 'Tap the Affiliate', wait: 'select', allow: ['select'] }); if (!live()) return;
+  await say({ text: 'After every day you can hire one card, if you can afford it. Every dollar you spend is a dollar short at payroll. Take the Affiliate: staff boost the 8 cards around them.', target: '.offers', hint: 'Tap the Affiliate', wait: 'select', allow: ['select'] }); if (!live()) return;
   await say({ text: 'Put them next to as many Gamblers as you can. Placement is the whole game.', target: '.felt', hint: 'Tap an empty slot', wait: 'placed', allow: ['place'], top: true }); if (!live()) return;
   reveal('payroll');
   await say({ text: 'This is payroll. Every 5 days, and it grows every time. Miss it once and the firm is dead.', target: '#payroll' }); if (!live()) return;
@@ -727,7 +730,7 @@ async function tutorial(): Promise<void> {
   store('tutorialDone', true);
   ui.mode = 'random';
   renderRun();
-  await say({ text: "That's the job. Tap ? any time for the rules. Survive as long as you can, boss.", target: null });
+  await say({ text: "That's the job. From here it only gets harder. Payroll grows every cycle and every hire competes with it. Tap ? for the rules. Good luck, boss.", target: null });
 }
 
 // ================================================================== boot

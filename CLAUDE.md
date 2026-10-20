@@ -5,7 +5,7 @@ first (playable from a link), then as iOS and Android apps via Capacitor, all fr
 
 The player runs a prop firm. A 5x4 grid holds trader and staff cards. Each day one tap prints a market
 candle (chop, trend up, trend down, news); every card reacts, fees come in, some traders move toward a
-payout. The player drafts 1 of 3 cards per day. Payroll is due every 5 days and grows x1.5 per cycle;
+payout. The player may buy 1 of 3 cards per day with cash. Payroll is due every 5 days and grows x1.55 per cycle;
 missing it ends the run. Big payouts trigger the Payout Desk (pay / stall / deny with an excuse card) and
 the Payout Interview (a 20-second inspection). Two meters: Trust and Heat. Score = peak valuation.
 
@@ -82,8 +82,11 @@ You must look at what you build before calling it done.
 
 ## Balance results
 
-Latest 10,000-game run per bot is in `design/balance-v1.txt`. Targets: careless play dies ~day 15,
-always-pay ~20 (goes broke), always-deny ~25 (Trust collapse), smart ~35 with a tail past 60.
+Hard mode is the design: every decision counts from day 1. Hires cost cash (common $40, uncommon $85,
+rare $160, excuse $45), rerolls cost $20 and rise $10 each time in the same shop. Start cash $120, first
+payroll $700, payroll grows x1.55 per cycle. Latest 10,000-game run per bot is in `design/balance-v2.txt`.
+Targets: careless play dies at the first payroll (~day 5), always-pay ~10, always-deny ~15, smart ~20
+with best runs past 40. No cheap strategy may match smart play.
 
 ## Look and feel
 

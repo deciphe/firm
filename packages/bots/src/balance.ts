@@ -1,4 +1,6 @@
-import { newRun, step } from '@firm/sim';
+import { BALANCE, newRun, step } from '@firm/sim';
+
+if (process.env.BAL) Object.assign(BALANCE, JSON.parse(process.env.BAL));
 import type { GameState } from '@firm/sim';
 import { BOTS, botRng } from './strategies.ts';
 

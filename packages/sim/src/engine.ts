@@ -11,17 +11,21 @@ import { CANDLES } from './types.ts';
 export const BALANCE = {
   cols: 5,
   rows: 4,
-  startCash: 300,
+  startCash: 120,
   startTrust: 3,
   cycleDays: 5,
-  payrollStart: 600,
-  payrollGrowth: 1.4,
+  payrollStart: 700,
+  payrollGrowth: 1.55,
   maxTrust: 5,
   maxHeat: 100,
   heatDecay: 2,
   handSize: 4,
   offers: 3,
-  rerollsPerCycle: 1,
+  rerollsPerCycle: 0,
+  /** What hiring costs. Every hire competes with payroll. */
+  prices: { common: 40, uncommon: 85, rare: 160, excuse: 45 } as Record<string, number>,
+  rerollBase: 20,
+  rerollStep: 10,
   severance: 100,
   baseForecast: { chop: 0.5, up: 0.175, down: 0.175, news: 0.15 } as Record<Candle, number>,
   forecastBump: 0.15,
@@ -114,6 +118,19 @@ export function trustMultiplier(trust: number): number {
   return Math.round((0.4 + 0.2 * trust) * 100) / 100;
 }
 
+/** Price of an offer. Hidden fraud is priced like the ordinary customer it pretends to be. */
+export function offerPrice(o: Offer): number {
+  if (o.kind === 'excuse') return BALANCE.prices.excuse ?? 45;
+  const def = cardDef(o.id);
+  const rarity = def.disguise ? 'common' : def.rarity;
+  return BALANCE.prices[rarity] ?? 40;
+}
+
+/** Rerolls get pricier each time today (resets every shop). */
+export function rerollPrice(s: GameState): number {
+  return BALANCE.rerollBase + BALANCE.rerollStep * s.rerolls;
+}
+
 // ------------------------------------------------------------------ new run
 
 export function newRun(seed: number): GameState {
@@ -170,8 +187,8 @@ export function legalActions(s: GameState): Action[] {
     }
     case 'draft':
       out.push({ type: 'draft', pick: null });
-      s.offers.forEach((_, i) => out.push({ type: 'draft', pick: i }));
-      if (s.rerolls > 0) out.push({ type: 'reroll' });
+      s.offers.forEach((o, i) => { if (s.cash >= offerPrice(o)) out.push({ type: 'draft', pick: i }); });
+      if (s.cash >= rerollPrice(s)) out.push({ type: 'reroll' });
       break;
     case 'dead':
       break;
@@ -208,8 +225,9 @@ export function step(prev: GameState, action: Action): GameState {
       draft(s, rng, action.pick, action.slot);
       break;
     case 'reroll':
-      need(s.phase === 'draft' && s.rerolls > 0, 'no rerolls left');
-      s.rerolls -= 1;
+      need(s.phase === 'draft' && s.cash >= rerollPrice(s), 'cannot afford a reroll');
+      s.cash -= rerollPrice(s);
+      s.rerolls += 1;
       s.offers = rollOffers(s, rng);
       break;
   }
@@ -418,6 +436,7 @@ function afterPayout(s: GameState, rng: Rng): void {
 
 function enterDraft(s: GameState, rng: Rng): void {
   s.phase = 'draft';
+  s.rerolls = 0;
   s.offers = rollOffers(s, rng);
 }
 
@@ -449,6 +468,8 @@ function draft(s: GameState, rng: Rng, pick: number | null, slot?: number): void
     const offer = s.offers[pick];
     need(offer !== undefined, 'no such offer');
     const o = offer as Offer;
+    need(s.cash >= offerPrice(o), 'cannot afford that hire');
+    s.cash -= offerPrice(o);
     if (o.kind === 'excuse') {
       s.excuses.push(o.id);
       if (s.excuses.length > BALANCE.handSize) s.excuses.shift();

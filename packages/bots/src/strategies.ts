@@ -1,4 +1,4 @@
-import { BALANCE, CARDS, EXCUSES, emptySlots, findCard, legalActions, neighborsOf } from '@firm/sim';
+import { BALANCE, CARDS, EXCUSES, emptySlots, findCard, legalActions, neighborsOf, offerPrice, rerollPrice } from '@firm/sim';
 import type { Action, GameState, Offer } from '@firm/sim';
 import { makeRng } from '@firm/sim';
 import type { Rng } from '@firm/sim';
@@ -113,18 +113,31 @@ function bestPlacement(s: GameState, offer: Offer): { value: number; slot?: numb
   return best;
 }
 
+/** Cash you can spend today without endangering the next payroll. */
+function spendable(s: GameState): number {
+  const daysLeft = Math.max(0, s.payroll.dueDay - s.day);
+  const loanDue = s.payroll.loanOwed > 0 && s.payroll.cycle + (daysLeft === 0 ? 0 : 0) >= s.payroll.loanDueCycle ? s.payroll.loanOwed : 0;
+  const reserve = s.payroll.amount + loanDue - avgIncome(s) * 0.85 * daysLeft;
+  return s.cash - Math.max(0, reserve);
+}
+
 function smartDraft(s: GameState): Action {
   let best: { i: number; value: number; slot?: number } = { i: -1, value: 0 };
+  const budget = spendable(s);
   s.offers.forEach((o, i) => {
+    const price = offerPrice(o);
+    if (price > budget || price > s.cash) return;
     const p = bestPlacement(s, o);
-    if (p.value > best.value) best = { i, value: p.value, ...(p.slot !== undefined ? { slot: p.slot } : {}) };
+    // value is roughly dollars per day; demand payback within ~7 days
+    const net = p.value - price / 7;
+    if (net > best.value) best = { i, value: net, ...(p.slot !== undefined ? { slot: p.slot } : {}) };
   });
-  if (best.i < 0 && s.rerolls > 0) return { type: 'reroll' };
+  if (best.i < 0 && s.rerolls === 0 && budget > rerollPrice(s) + 60) return { type: 'reroll' };
   return best.i < 0 ? { type: 'draft', pick: null } : { type: 'draft', pick: best.i, ...(best.slot !== undefined ? { slot: best.slot } : {}) };
 }
 
 function naiveDraft(s: GameState): Action {
-  const i = s.offers.findIndex((o) => o.kind === 'excuse' || emptySlots(s).length > 0);
+  const i = s.offers.findIndex((o) => s.cash >= offerPrice(o) && (o.kind === 'excuse' || emptySlots(s).length > 0));
   return { type: 'draft', pick: i < 0 ? null : i };
 }
 
