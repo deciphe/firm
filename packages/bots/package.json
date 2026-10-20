@@ -1,0 +1,13 @@
+{
+  "name": "@firm/bots",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "balance": "tsx src/balance.ts",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "echo no tests"
+  },
+  "dependencies": {
+    "@firm/sim": "workspace:*"
+  }
+}

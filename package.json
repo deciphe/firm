@@ -1,0 +1,10 @@
+{
+  "name": "firm",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "bots": "pnpm --filter @firm/bots run balance"
+  }
+}
