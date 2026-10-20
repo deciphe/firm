@@ -16,10 +16,7 @@ const result = await esbuild.build({
 });
 const js = result.outputFiles[0].text.replace(/<\/script/gi, '<\\/script');
 const template = readFileSync(resolve(here, 'index.template.html'), 'utf8');
-const font = (f) => readFileSync(resolve(here, '../../design/fonts', f)).toString('base64');
 const body = template
-  .replace('/*__FONT_REG__*/', () => font('firm-pixel.ttf'))
-  .replace('/*__FONT_BOLD__*/', () => font('firm-pixel-bold.ttf'))
   .replace('/*__BUNDLE__*/', () => js);
 mkdirSync(resolve(here, 'dist'), { recursive: true });
 writeFileSync(resolve(here, 'dist/firm.html'), body);

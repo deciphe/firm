@@ -72,13 +72,12 @@ You must look at what you build before calling it done.
 3. Keep a Playwright visual regression suite (`toHaveScreenshot`) for every key state so later changes
    can't silently break a screen.
 4. Audit every screenshot against this list, then fix and re-shoot until it passes:
-   - Matches design tokens in `design/tokens.ts` (no stray colours, sizes or spacing).
+   - Matches the colour tokens at the top of `apps/game/index.template.html`.
    - Every number is tabular monospace and right-aligned; nothing jitters as it ticks.
    - Readable at arm's length on the small phone size; tap targets at least 44x44 px.
    - Primary action reachable by one thumb in the bottom third of the screen.
    - One focal point per screen. Juice only on money moments.
    - Text contrast meets WCAG AA on the dark background.
-   - Pixel art stays pixel-perfect (`image-rendering: pixelated`, integer scaling, no blur).
 5. Save before/after screenshots in `design/audits/` with a one-line note on what changed and why.
 
 ## Balance results
@@ -88,14 +87,18 @@ always-pay ~20 (goes broke), always-deny ~25 (Trust collapse), smart ~35 with a 
 
 ## Look and feel
 
-Pixels for things, crisp type for numbers. Traders, staff, candles and the death card are chunky
-pixel art (32x32 sprites, 16-colour palette, readable by silhouette). Prices, P&L, payroll and the feed are
-sharp monospace like a perp-DEX order book. Near-black background with a green-blue tint; one mint
-accent for money in, one hot red for money out and danger. Bold pixel font for headings, used sparingly.
-Motion is fast (120-200 ms). Jane Street restraint everywhere except money moments.
-
-Placeholder sprites may be generated in code. Final sprite art and sound will come from a human artist;
-keep sprites in `design/sprites/` with a consistent naming scheme so they can be swapped without code changes.
+Balatro's table, in the Flat MASSIVE language with Claude's warmth.
+- Layout copies Balatro: left run panel (payroll to beat, Fees x Mult = Today, cash, trust/heat, day,
+  cycle, rerolls), the Book of cards in the centre, one big action at the bottom, a shop that slides up
+  after every day. Phone stacks the same pieces compactly.
+- Palette: ink #080809 background, cream paper #eeeae2 cards, muted #aaa499, restrained gold #d8c38f
+  (money, payouts), platinum #c9ccd1 (staff, trust), bronze #b0805a (heat), Claude clay #d97757 for the
+  main action and the mult box, soft steel blue #86a9d4 for the fees box.
+- Type: Manrope everywhere (loaded from Google Fonts; Inter is the local fallback), tabular numbers.
+- Identity: lunar stipple. A dotted moon turns slowly behind the game (`src/stipple.ts`); every card face
+  is a stippled ink illustration generated from simple shapes. No gradients on art, no cartoon faces.
+- Juice: cards sway, jump and pop blue fee chips and clay mult chips in order; the boxes bump; Today
+  catches fire on record days; payout cards flip and get stamped. Juice only on money moments.
 
 ## Content rules
 

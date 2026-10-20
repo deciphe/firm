@@ -37,25 +37,27 @@ def run(p, w, h):
     advance('#guide:not([hidden]) .hint:text("Tap the Affiliate")')
     pg.wait_for_timeout(2200)
     shot(pg, f'{tag}-04-tutorial-hire')
-    pg.click('.offer >> nth=0'); pg.wait_for_timeout(2400)
+    pg.click('.offer >> nth=0', force=True); pg.wait_for_timeout(2400)
     shot(pg, f'{tag}-05-tutorial-place')
     # a real run
+    print(tag, 'tutorial ok', flush=True)
     pg.evaluate('__firm.load(1234)'); pg.wait_for_timeout(200)
+    pg.set_default_timeout(6000)
     for _ in range(4):
         pg.click('#btn-tap'); pg.wait_for_timeout(5200)
         while pg.is_visible('#payout:not([hidden])'):
             pg.click('#po-pay') if pg.is_enabled('#po-pay') else pg.click('#po-stall'); pg.wait_for_timeout(1000)
         if pg.is_visible('.offer'):
-            pg.click('.offer >> nth=0'); pg.wait_for_timeout(150)
+            pg.click('.offer >> nth=0', force=True); pg.wait_for_timeout(150)
             if pg.is_visible('#grid.placing'):
-                pg.click('.tile.empty >> nth=0'); pg.wait_for_timeout(500)
+                pg.click('.slot >> nth=0', force=True); pg.wait_for_timeout(500)
     pg.wait_for_timeout(400)
     shot(pg, f'{tag}-06-midrun')
     pg.click('#btn-tap'); pg.wait_for_timeout(5200)
     while pg.is_visible('#payout:not([hidden])'):
         pg.click('#po-pay') if pg.is_enabled('#po-pay') else pg.click('#po-stall'); pg.wait_for_timeout(1000)
     shot(pg, f'{tag}-07-draft')
-    pg.evaluate('''() => { __firm.load(77); const s = __firm.state; s.grid[7].progress = 10; s.grid[6].revealed = true; s.cash = 900; s.excuses = ['terms','kyc','glitch']; __firm.set({grid: s.grid, cash: s.cash, excuses: s.excuses}); }''')
+    pg.evaluate('''() => { __firm.load(77); const s = __firm.state; s.grid[7].progress = 10; s.grid[6].revealed = true; s.grid[6].def = 'hedger'; s.cash = 900; s.excuses = ['terms','kyc','glitch']; __firm.set({grid: s.grid, cash: s.cash, excuses: s.excuses}); }''')
     pg.click('#btn-tap'); pg.wait_for_timeout(6200)
     shot(pg, f'{tag}-08-payout')
     pg.evaluate('''() => { __firm.set({phase:'dead', cause:'payroll', shortBy:212, day:34, stats: {...__firm.state.stats, peakValuation: 14220, payoutsPaid: 17, payoutsDenied: 2, fraudCaught: 1}}); __firm.showDeath(); }''')
