@@ -1,0 +1,1 @@
+v5: fixed design resolution (1600x900 / 430-wide portrait) with camera fit; payroll hero, trust/heat gauges, small Today receipt, valuation; market strip; excuses + wire panel. Fixes 'horrid in browser' and hierarchy feedback.

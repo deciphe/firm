@@ -20,7 +20,9 @@ When the doc and this file disagree, ask the user.
   `apps/game/vendor/` with types in `apps/game/vendor/types/`. Phaser is a global; do not import it.
 - Everything renders in-engine: background paint-swirl shader (`src/engine/shaders.ts`), CRT post-process,
   springy cards (`src/engine/card.ts`), UI kit (`src/engine/ui.ts`), the whole game scene (`src/engine/scene.ts`).
-  The canvas runs at device pixel ratio; layout numbers are CSS px passed through `u()`.
+  The canvas runs at device pixel ratio. Layout is in fixed design units (1600x900 table on computers,
+  430-wide portrait on phones, height follows the phone); the camera zooms the design to fit any window
+  and the paint swirl fills the rest. `__firm.rect()` returns CSS px for clicking.
 - Sound is synthesised with Web Audio (`src/juice.ts`). Card art is generated stipple (`src/stipple.ts`).
 - esbuild bundles the game (`apps/game/build.mjs`) into `dist/firm.html` (published) and `dist/dev.html` (local).
 - Tests: `node:test` via `tsx --test`. `apps/game/shoot.py` plays the game through real canvas clicks
@@ -95,9 +97,10 @@ with best runs past 40. No cheap strategy may match smart play.
 ## Look and feel
 
 Balatro's table, in the Flat MASSIVE language with Claude's warmth.
-- Layout copies Balatro: left run panel (payroll to beat, Fees x Mult = Today, cash, trust/heat, day,
-  cycle, rerolls), the Book of cards in the centre, one big action at the bottom, a shop that slides up
-  after every day. Phone stacks the same pieces compactly.
+- Hierarchy (most important first): Payroll hero (amount, days left, cash vs need), Trust and Heat gauges,
+  a small Today receipt (fees x mult), Valuation. Left run panel, the Book in the centre under a market
+  strip (last candles + next odds), excuses and The Wire on the right, one big action at the bottom, a
+  shop that slides up after every day. Phone stacks the same pieces in that order.
 - Palette: ink #080809 background, cream paper #eeeae2 cards, muted #aaa499, restrained gold #d8c38f
   (money, payouts), platinum #c9ccd1 (staff, trust), bronze #b0805a (heat), Claude clay #d97757 for the
   main action and the mult box, soft steel blue #86a9d4 for the fees box.

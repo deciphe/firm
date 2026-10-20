@@ -2,7 +2,6 @@ import * as J from './juice.ts';
 import { CrtPipeline } from './engine/shaders.ts';
 import { FirmScene } from './engine/scene.ts';
 import type { UiState } from './engine/scene.ts';
-import { setDpr } from './engine/ui.ts';
 
 interface Hot { snapshot?: (fn: () => unknown) => void; ready?: (fn: (data: { ui?: UiState }) => void) => void; data?: { ui?: UiState } }
 
@@ -19,7 +18,6 @@ async function boot(data: { ui?: UiState }): Promise<void> {
     ]);
   } catch { /* fallback fonts are fine */ }
   const dpr = Math.min(3, window.devicePixelRatio || 1);
-  setDpr(dpr);
   const parent = document.getElementById('game') as HTMLElement;
   const size = (): { w: number; h: number } => ({ w: Math.max(320, parent.clientWidth), h: Math.max(480, parent.clientHeight) });
   const { w, h } = size();

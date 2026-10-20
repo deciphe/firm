@@ -6,7 +6,7 @@ import * as J from '../juice.ts';
 import { CardView, artTexture, shortName } from './card.ts';
 import { BG_FRAG, CrtPipeline } from './shaders.ts';
 import { C, DEPTH, H } from './theme.ts';
-import { Button, STYLE, Spring, dashedRect, roundRect, strokeRect, text, u } from './ui.ts';
+import { Button, STYLE, Spring, dashedRect, roundRect, setTextRes, strokeRect, text, u } from './ui.ts';
 
 // ================================================================== run state (survives rebuilds and hot reloads)
 
@@ -49,6 +49,7 @@ export function freshUi(mode: Mode): UiState {
 
 const CANDLE: Record<Candle, string> = { chop: 'CHOP', up: 'TREND UP', down: 'TREND DOWN', news: 'NEWS' };
 const CANDLE_SUB: Record<Candle, string> = { chop: 'traders blow up and rebuy', up: 'traders run at their payouts', down: 'traders run at their payouts', news: 'anything can happen' };
+const CANDLE_COLOR: Record<Candle, number> = { chop: C.muted, up: C.paper, down: C.clay, news: C.gold };
 const CAUSE: Record<string, string> = { payroll: 'Missed payroll', trust: 'Nobody trusts you', heat: 'Shut down by regulators' };
 
 const offerArt = (o: Offer): string => (o.kind === 'excuse' ? 'excuse' : cardDef(o.id).disguise ? 'retail' : o.id);
@@ -65,15 +66,28 @@ function infoBody(card: CardInstance): string {
   const def = cardDef(card.def);
   return !card.revealed && def.disguise ? (CARDS.retail?.blurb ?? '') : def.blurb;
 }
+function heatWord(h: number): { word: string; color: string } {
+  if (h >= 85) return { word: 'SHUTDOWN AT 100', color: H.clay };
+  if (h >= 60) return { word: 'REGULATORS CIRCLING', color: H.clay };
+  if (h >= 30) return { word: 'GETTING NOTICED', color: H.bronze };
+  return { word: 'QUIET', color: H.muted };
+}
 
 type Gate = 'tap' | 'select' | 'place' | 'skip' | 'reroll' | 'pay' | 'stall' | 'deny' | 'info' | 'sale' | 'loan';
 interface Rect { x: number; y: number; w: number; h: number }
 interface Say { text: string; target?: string | null; hint?: string; wait?: string; allow?: Gate[]; top?: boolean }
 
+/**
+ * Everything is laid out in fixed design units: a 1600x900 table on computers, a 430-wide portrait table on
+ * phones (height follows the phone). The camera zooms the design to fit the window; the paint swirl fills
+ * whatever is left over, so the game looks the same in any browser window.
+ */
 interface Layout {
-  W: number; H: number; wide: boolean;
-  panel: Rect; row: Rect; grid: Rect; cw: number; ch: number; gap: number; cta: Rect; moves: Rect | null;
+  W: number; H: number; wide: boolean; k: number; fit: number; view: Rect;
+  panel: Rect; side: Rect | null; center: Rect; strip: Rect; hand: Rect;
+  grid: Rect; cw: number; ch: number; gap: number; cta: Rect; moves: Rect | null;
 }
+interface Gauge { x: number; y: number; w: number; h: number; arc: boolean }
 
 // ================================================================== the scene
 
@@ -87,9 +101,12 @@ export class FirmScene extends Phaser.Scene {
   private crt: CrtPipeline | null = null;
   private pulse = { r: 0, g: 0, b: 0, a: 0 };
   private spin = 0;
+  private clock = 0;
   private cards: CardView[] = [];
   private hud: Record<string, Phaser.GameObjects.Text> = {};
   private hudG!: Phaser.GameObjects.Graphics;
+  private hudDyn!: Phaser.GameObjects.Graphics;
+  private alarmG!: Phaser.GameObjects.Graphics;
   private chipBox!: Phaser.GameObjects.Container;
   private multBox!: Phaser.GameObjects.Container;
   private todayBox!: Phaser.GameObjects.Container;
@@ -106,6 +123,15 @@ export class FirmScene extends Phaser.Scene {
   private fire: Phaser.GameObjects.Particles.ParticleEmitter | null = null;
   private burst: Phaser.GameObjects.Particles.ParticleEmitter | null = null;
   private replaceArmed = -1;
+  private geo = {
+    payBox: { x: 0, y: 0, w: 0, h: 0 } as Rect,
+    track: { x: 0, y: 0, w: 0, h: 0 } as Rect,
+    bar: { x: 0, y: 0, w: 0, h: 0 } as Rect,
+    trust: { x: 0, y: 0, w: 0, h: 0, arc: true } as Gauge,
+    heat: { x: 0, y: 0, w: 0, h: 0, arc: true } as Gauge,
+  };
+  private urgent = false;
+  private hot = false;
   // guide
   private allowed: Set<Gate> | null = null;
   private waiters = new Map<string, () => void>();
@@ -154,60 +180,78 @@ export class FirmScene extends Phaser.Scene {
     this.time.delayedCall(120, go);
   }
 
-  private computeLayout(): Layout {
-    const W = this.scale.width / window.devicePixelRatio, Hh = this.scale.height / window.devicePixelRatio;
-    const wide = W >= 900 && W / Hh >= 1.25;
+  private desperate(): boolean {
     const s = this.ui.s;
-    const due = s.payroll.amount + (s.payroll.loanOwed > 0 && s.payroll.cycle >= s.payroll.loanDueCycle ? s.payroll.loanOwed : 0);
-    const desperate = this.ui.mode !== 'tutorial' && s.phase === 'morning' && s.cash < due && s.payroll.dueDay - s.day <= 1;
-    const ratio = 1.38;
-    if (wide) {
-      const m = 18;
-      const panel = { x: m, y: m, w: 320, h: Hh - 2 * m };
-      const tx = panel.x + panel.w + 26, tw = W - tx - 28;
-      const ctaH = 74;
-      const cta = { x: tx + tw / 2 - 190, y: Hh - m - ctaH, w: 380, h: ctaH };
-      const row = { x: tx, y: m, w: tw, h: 34 };
-      const gy = row.y + row.h + 12, gh = cta.y - 18 - gy;
-      const gap = 12;
-      let ch = (gh - 3 * gap) / 4, cw = ch / ratio;
-      if (cw * 5 + 4 * gap > tw) { cw = (tw - 4 * gap) / 5; ch = cw * ratio; }
+    return this.ui.mode !== 'tutorial' && s.phase === 'morning' && s.cash < this.payrollDue() && s.payroll.dueDay - s.day <= 1;
+  }
+  private payrollDue(): number {
+    const p = this.ui.s.payroll;
+    return p.amount + (p.loanOwed > 0 && p.cycle >= p.loanDueCycle ? p.loanOwed : 0);
+  }
+
+  private computeLayout(): Layout {
+    const dpr = Math.min(3, window.devicePixelRatio || 1);
+    const cw0 = this.scale.width, ch0 = this.scale.height;
+    const winW = cw0 / dpr, winH = ch0 / dpr;
+    const wide = winW / winH >= 1.1 && winW >= 700;
+    const W = wide ? 1600 : 430;
+    const Hh = wide ? 900 : Math.round(Math.max(760, Math.min(1000, (430 * winH) / winW)));
+    const fit = Math.min(winW / W, winH / Hh);
+    const k = fit * dpr;
+    const vw = cw0 / k, vh = ch0 / k;
+    const view = { x: W / 2 - vw / 2, y: Hh / 2 - vh / 2, w: vw, h: vh };
+    const desperate = this.desperate();
+    const fitGrid = (area: Rect, gap: number, ratio: number): { grid: Rect; cw: number; ch: number } => {
+      let ch = (area.h - 3 * gap) / 4, cw = ch / ratio;
+      if (cw * 5 + 4 * gap > area.w) { cw = (area.w - 4 * gap) / 5; ch = cw * ratio; }
       const gw = cw * 5 + gap * 4, gH = ch * 4 + gap * 3;
-      const grid = { x: tx + (tw - gw) / 2, y: gy + (gh - gH) / 2, w: gw, h: gH };
-      const moves = desperate ? { x: tx, y: cta.y, w: Math.min(360, cta.x - tx - 20), h: ctaH } : null;
-      return { W, H: Hh, wide, panel, row, grid, cw, ch, gap, cta, moves };
+      return { grid: { x: area.x + (area.w - gw) / 2, y: area.y + (area.h - gH) / 2, w: gw, h: gH }, cw, ch };
+    };
+    if (wide) {
+      const panel = { x: 24, y: 24, w: 372, h: 852 };
+      const side = { x: 1204, y: 24, w: 372, h: 852 };
+      const center = { x: 420, y: 24, w: 760, h: 852 };
+      const strip = { x: 420, y: 24, w: 760, h: 64 };
+      const ctaH = 84;
+      const cta = { x: 800 - 220, y: 876 - ctaH, w: 440, h: ctaH };
+      const moves = desperate ? { x: 420, y: cta.y, w: 760, h: ctaH } : null;
+      const gap = 14;
+      const gy = strip.y + strip.h + 18;
+      const { grid, cw, ch } = fitGrid({ x: 420, y: gy, w: 760, h: cta.y - 20 - gy }, gap, 1.28);
+      const hand = { x: side.x + 20, y: side.y + 20, w: side.w - 40, h: 300 };
+      return { W, H: Hh, wide, k, fit, view, panel, side, center, strip, hand, grid, cw, ch, gap, cta, moves };
     }
-    const mx = 12;
-    const panel = { x: mx, y: 10, w: W - 2 * mx, h: 214 };
-    const row = { x: mx, y: panel.y + panel.h + 8, w: W - 2 * mx, h: 32 };
-    const ctaH = 60;
-    const cta = { x: mx, y: Hh - 12 - ctaH, w: W - 2 * mx, h: ctaH };
-    const moves = desperate ? { x: mx, y: cta.y - 62, w: W - 2 * mx, h: 54 } : null;
-    const gy = row.y + row.h + 10, gBottom = (moves ? moves.y : cta.y) - 12, gh = gBottom - gy;
-    const gap = 6, tw = W - 2 * mx;
-    let ch = (gh - 3 * gap) / 4, cw = ch / ratio;
-    if (cw * 5 + 4 * gap > tw) { cw = (tw - 4 * gap) / 5; ch = cw * ratio; }
-    const gw = cw * 5 + gap * 4, gH = ch * 4 + gap * 3;
-    const grid = { x: mx + (tw - gw) / 2, y: gy + (gh - gH) / 2, w: gw, h: gH };
-    return { W, H: Hh, wide, panel, row, grid, cw, ch, gap, cta, moves };
+    const mx = 14, w = W - 2 * mx;
+    const panel = { x: mx, y: 12, w, h: 246 };
+    const strip = { x: mx, y: 266, w, h: 40 };
+    const hand = { x: mx, y: 314, w, h: 28 };
+    const ctaH = 64;
+    const cta = { x: mx, y: Hh - 14 - ctaH, w, h: ctaH };
+    const moves = desperate ? { x: mx, y: cta.y - 62, w, h: 54 } : null;
+    const gap = 6;
+    const gy = 352, gb = (moves ? moves.y : cta.y) - 12;
+    const { grid, cw, ch } = fitGrid({ x: mx, y: gy, w, h: gb - gy }, gap, 1.34);
+    return { W, H: Hh, wide, k, fit, view, panel, side: null, center: { x: 0, y: 0, w: W, h: Hh }, strip, hand, grid, cw, ch, gap, cta, moves };
   }
 
   private build(): void {
     this.tweens.killAll();
     this.children.removeAll(true);
-    this.cards = []; this.moveBtns = []; this.hud = {}; this.veiled = {}; this.hits = {};
+    this.cards = []; this.moveBtns = []; this.hud = {}; this.veiled = {}; this.hits = {}; this.boxSprings = {};
     this.shop = null; this.overlay = null; this.tip = null; this.toastObj = null; this.guideLayer = null;
     this.L = this.computeLayout();
-    const { W, H: Hh } = this.L;
-    // backdrop
+    const { view: V, wide } = this.L;
+    setTextRes(this.L.k);
+    this.cameras.main.setZoom(this.L.k).centerOn(this.L.W / 2, this.L.H / 2);
+    // backdrop fills the whole window, not just the design area
     const shader = new Phaser.Display.BaseShader('bg', BG_FRAG, undefined, {
-      uPix: { type: '1f', value: u(4) }, uSpin: { type: '1f', value: 0 },
+      uPix: { type: '1f', value: wide ? 5 : 3.5 }, uSpin: { type: '1f', value: 0 },
       uPulse: { type: '4f', value: { x: 0, y: 0, z: 0, w: 0 } }, uHeat: { type: '1f', value: 0 },
     });
-    this.bg = this.add.shader(shader, 0, 0, u(W), u(Hh)).setOrigin(0).setDepth(DEPTH.bg);
+    this.bg = this.add.shader(shader, V.x - 4, V.y - 4, V.w + 8, V.h + 8).setOrigin(0).setDepth(DEPTH.bg);
     // particles
-    this.fire = this.add.particles(0, 0, 'dot', { speed: { min: u(30), max: u(90) }, angle: { min: 240, max: 300 }, lifespan: { min: 500, max: 900 }, scale: { start: u(0.45), end: 0 }, tint: [C.gold, C.clay, 0xffe0a0], blendMode: 'ADD', emitting: false, frequency: 18, quantity: 2 }).setDepth(DEPTH.fly);
-    this.burst = this.add.particles(0, 0, 'dot', { speed: { min: u(80), max: u(260) }, lifespan: { min: 350, max: 700 }, scale: { start: u(0.38), end: 0 }, tint: [C.gold, C.paper], blendMode: 'ADD', emitting: false, gravityY: u(380) }).setDepth(DEPTH.fly);
+    this.fire = this.add.particles(0, 0, 'dot', { speed: { min: 30, max: 90 }, angle: { min: 240, max: 300 }, lifespan: { min: 500, max: 900 }, scale: { start: 0.45, end: 0 }, tint: [C.gold, C.clay, 0xffe0a0], blendMode: 'ADD', emitting: false, frequency: 18, quantity: 2 }).setDepth(DEPTH.fly);
+    this.burst = this.add.particles(0, 0, 'dot', { speed: { min: 80, max: 260 }, lifespan: { min: 350, max: 700 }, scale: { start: 0.38, end: 0 }, tint: [C.gold, C.paper], blendMode: 'ADD', emitting: false, gravityY: 380 }).setDepth(DEPTH.fly);
     this.buildHud();
     this.buildRow();
     this.buildGrid();
@@ -217,11 +261,11 @@ export class FirmScene extends Phaser.Scene {
 
   // ---------------------------------------------------------------- HUD
 
-  private box(x: number, y: number, w: number, h: number, fill: number, stroke: number = C.line, a = 1, reveal?: string): void {
+  private box(x: number, y: number, w: number, h: number, fill: number, stroke: number = C.line, a = 1, reveal?: string, r = 12): void {
     let g = this.hudG;
     if (reveal) { g = this.add.graphics().setDepth(DEPTH.hud); (this.veiled[reveal] ??= []).push(g); }
-    roundRect(g, x, y, w, h, 10, fill, a);
-    strokeRect(g, x, y, w, h, 10, stroke, 1);
+    roundRect(g, x, y, w, h, r, fill, a);
+    strokeRect(g, x, y, w, h, r, stroke, 1);
   }
 
   private label(name: string, x: number, y: number, str: string, o: Parameters<typeof text>[4], reveal?: string): Phaser.GameObjects.Text {
@@ -231,258 +275,392 @@ export class FirmScene extends Phaser.Scene {
     return t;
   }
 
-  private scoreBox(x: number, y: number, w: number, h: number, fill: number, deep: number, lbl: string, ink: string, key: string, alignRight: boolean): Phaser.GameObjects.Container {
-    const c = this.add.container(u(x + w / 2), u(y + h / 2)).setDepth(DEPTH.hud + 1);
+  /** Small score pill (fees / mult): a container so it can bump. */
+  private scorePill(x: number, y: number, w: number, h: number, fill: number, deep: number, ink: string, key: string, size: number): Phaser.GameObjects.Container {
+    const c = this.add.container(x + w / 2, y + h / 2).setDepth(DEPTH.hud + 1);
     const g = this.add.graphics();
-    roundRect(g, -w / 2, -h / 2 + 3, w, h - 3, 10, deep);
-    roundRect(g, -w / 2, -h / 2, w, h - 3, 10, fill);
-    const l = text(this, alignRight ? w / 2 - 10 : -w / 2 + 10, -h / 2 + 8, lbl, { size: 10, weight: 800, color: ink, spacing: 1.6 }).setOrigin(alignRight ? 1 : 0, 0).setAlpha(0.7);
-    const v = text(this, alignRight ? w / 2 - 10 : -w / 2 + 10, h / 2 - 6, '0', { size: h > 56 ? 28 : 19, weight: 800, color: ink }).setOrigin(alignRight ? 1 : 0, 1);
-    c.add([g, l, v]);
+    roundRect(g, -w / 2, -h / 2 + 2, w, h, 8, deep);
+    roundRect(g, -w / 2, -h / 2, w, h - 1, 8, fill);
+    const v = text(this, 0, -1, '0', { size, weight: 800, color: ink }).setOrigin(0.5);
+    c.add([g, v]);
     this.hud[key] = v;
     this.boxSprings[key] = new Spring(1, 1, 380, 16);
     return c;
   }
 
+  private brandRow(x0: number, y: number, w: number, big: boolean): void {
+    const fs = big ? 24 : 18;
+    this.label('mark', x0 + 1, y + (big ? 2 : 6), 'FIRM', { size: fs, weight: 800, spacing: fs * 0.3 });
+    if (big) this.label('firm', x0 + 2, y + 34, '', { size: 12.5, weight: 600, color: H.muted });
+    else this.label('firm', x0 + 82, y + 11, '', { size: 11.5, weight: 600, color: H.muted });
+    const bh = big ? 40 : 36;
+    const how = new Button(this, x0 + w - (big ? 124 : 112), y, big ? 44 : 38, bh, '?', { ...STYLE.dark, size: 14, spacing: 0 }).setDepth(DEPTH.hud + 2);
+    how.onClick = () => this.showHow();
+    this.hits.how = { x: x0 + w - (big ? 124 : 112), y, w: big ? 44 : 38, h: bh };
+    const snd = new Button(this, x0 + w - (big ? 72 : 68), y, big ? 72 : 68, bh, J.isMuted() ? 'MUTED' : 'SOUND', { ...STYLE.dark, size: 10.5, spacing: 1 }).setDepth(DEPTH.hud + 2);
+    snd.onClick = () => { J.unlockAudio(); J.setMuted(!J.isMuted()); store('muted', J.isMuted()); snd.setLabel(J.isMuted() ? 'MUTED' : 'SOUND'); };
+  }
+
   private buildHud(): void {
     const { panel: P, wide } = this.L;
     this.hudG = this.add.graphics().setDepth(DEPTH.hud);
-    roundRect(this.hudG, P.x, P.y, P.w, P.h, wide ? 18 : 14, C.panel, 0.94);
-    strokeRect(this.hudG, P.x, P.y, P.w, P.h, wide ? 18 : 14, C.line, 1);
-    const x0 = P.x + (wide ? 14 : 8), w = P.w - (wide ? 28 : 16);
-    let y = P.y + (wide ? 16 : 8);
-    // brand row
-    const fs = wide ? 20 : 15;
-    this.label('mark', x0 + 4, y + (wide ? 4 : 6), 'FIRM', { size: fs, weight: 800, spacing: fs * 0.32 });
-    this.label('firm', x0 + (wide ? 96 : 70), y + (wide ? 9 : 9), '', { size: 12, weight: 600, color: H.muted });
-    const how = new Button(this, x0 + w - 104, y, 34, 32, '?', { ...STYLE.dark, size: 13, spacing: 0 }).setDepth(DEPTH.hud + 2);
-    how.onClick = () => this.showHow();
-    this.hits.how = { x: x0 + w - 104, y, w: 34, h: 32 };
-    const snd = new Button(this, x0 + w - 64, y, 64, 32, J.isMuted() ? 'MUTED' : 'SOUND', { ...STYLE.dark, size: 10.5, spacing: 1 }).setDepth(DEPTH.hud + 2);
-    snd.onClick = () => { J.unlockAudio(); J.setMuted(!J.isMuted()); store('muted', J.isMuted()); snd.setLabel(J.isMuted() ? 'MUTED' : 'SOUND'); };
-    y += wide ? 46 : 40;
-
-    if (wide) {
-      // payroll
-      this.box(x0, y, w, 118, 0x1d1210, 0x5a3426, 1, 'payroll');
-      this.label('payLbl', x0 + 14, y + 14, 'PAYROLL · PAY AT LEAST', { size: 10.5, weight: 800, color: H.muted, spacing: 1.4 }, 'payroll');
-      this.label('payAmt', x0 + 14, y + 32, '$0', { size: 34, weight: 800 }, 'payroll');
-      this.label('payWhen', x0 + w - 14, y + 14, '', { size: 12, weight: 700, color: H.muted }, 'payroll').setOrigin(1, 0);
-      this.hits.payroll = { x: x0, y, w, h: 118 };
-      this.payrollGeom = { x: x0 + 14, y: y + 82, w: w - 28, dotsX: x0 + w - 14, dotsY: y + 40 };
-      this.label('payGap', x0 + 14, y + 94, '', { size: 12, weight: 700, color: H.muted }, 'payroll');
-      y += 130;
-      // fees x mult
-      const bw = (w - 26) / 2;
-      this.chipBox = this.scoreBox(x0, y, bw, 66, C.chip, C.chipDeep, 'FEES', H.chipInk, 'base', true);
-      this.label('times', x0 + bw + 13, y + 33, '×', { size: 20, weight: 800, color: H.muted }).setOrigin(0.5);
-      this.multBox = this.scoreBox(x0 + bw + 26, y, bw, 66, C.clay, C.clayDeep, 'MULT', H.clayInk, 'mult', false);
-      this.hits.score = { x: x0, y, w, h: 66 };
-      y += 78;
-      this.todayBox = this.add.container(u(x0 + w / 2), u(y + 22)).setDepth(DEPTH.hud + 1);
-      this.todayBox.add(text(this, -w / 2 + 6, 0, 'TODAY', { size: 10.5, weight: 800, color: H.muted, spacing: 1.6 }).setOrigin(0, 0.5));
-      const tv = text(this, w / 2 - 6, 0, '+$0', { size: 34, weight: 800 }).setOrigin(1, 0.5);
-      this.todayBox.add(tv); this.hud.today = tv; this.boxSprings.today = new Spring(1, 1, 380, 16);
-      y += 54;
-      // cash + meters
-      const hw = (w - 10) / 2;
-      this.box(x0, y, hw, 70, C.panel2);
-      this.label('cashLbl', x0 + 12, y + 12, 'CASH', { size: 10.5, weight: 800, color: H.muted, spacing: 1.6 });
-      this.label('cash', x0 + 12, y + 30, '$0', { size: 28, weight: 800, color: H.gold });
-      this.hits.cash = { x: x0, y, w: hw, h: 70 };
-      this.box(x0 + hw + 10, y, hw, 70, C.panel2, C.line, 1, 'trust');
-      this.meterGeom = { x: x0 + hw + 22, y: y + 22, w: hw - 24, gap: 26 };
-      this.label('trustLbl', x0 + hw + 22, y + 14, 'Trust', { size: 11, weight: 700, color: H.muted }, 'trust');
-      this.label('trust', x0 + 2 * hw + 0, y + 14, '3.0', { size: 11, weight: 800 }, 'trust').setOrigin(1, 0);
-      this.label('heatLbl', x0 + hw + 22, y + 40, 'Heat', { size: 11, weight: 700, color: H.muted }, 'trust');
-      this.label('heat', x0 + 2 * hw + 0, y + 40, '0', { size: 11, weight: 800 }, 'trust').setOrigin(1, 0);
-      this.hits.meters = { x: x0 + hw + 10, y, w: hw, h: 70 };
-      y += 82;
-      // stats
-      const sw = (w - 18) / 4;
-      [['DAY', 'day'], ['CYCLE', 'cycle'], ['REROLL', 'rr'], ['BOOK', 'book']].forEach(([lbl, key], i) => {
-        const bx = x0 + i * (sw + 6);
-        this.box(bx, y, sw, 56, C.panel2);
-        this.label(`${key}L`, bx + sw / 2, y + 10, lbl ?? '', { size: 9.5, weight: 800, color: H.muted, spacing: 1.2 }).setOrigin(0.5, 0);
-        this.label(key ?? '', bx + sw / 2, y + 26, '', { size: 18, weight: 800 }).setOrigin(0.5, 0);
-      });
-      y += 68;
-      const bh = 44;
-      const b1 = new Button(this, x0, y, (w - 8) / 2, bh, 'HOW IT WORKS', { ...STYLE.dark, size: 10.5 }).setDepth(DEPTH.hud + 2);
-      b1.onClick = () => this.showHow();
-      const b2 = new Button(this, x0 + (w + 8) / 2, y, (w - 8) / 2, bh, 'NEW FIRM', { ...STYLE.dark, size: 10.5 }).setDepth(DEPTH.hud + 2);
-      b2.onClick = () => { if (!this.busy) this.newGame('random'); };
-      y += bh + 18;
-      // the feed
-      this.feedGeom = { x: x0 + 4, y, w: w - 8, bottom: P.y + P.h - 14 };
-    } else {
-      const pw = w * 0.72, cwid = w - pw - 6;
-      this.box(x0, y, pw, 76, 0x1d1210, 0x5a3426, 1, 'payroll');
-      this.label('payLbl', x0 + 10, y + 9, 'PAYROLL · PAY AT LEAST', { size: 9.5, weight: 800, color: H.muted, spacing: 1 }, 'payroll');
-      this.label('payAmt', x0 + 10, y + 24, '$0', { size: 21, weight: 800 }, 'payroll');
-      this.label('payWhen', x0 + pw - 10, y + 9, '', { size: 11, weight: 700, color: H.muted }, 'payroll').setOrigin(1, 0);
-      this.payrollGeom = { x: x0 + 10, y: y + 54, w: pw - 20, dotsX: x0 + pw - 10, dotsY: y + 32 };
-      this.label('payGap', x0 + 10, y + 61, '', { size: 10.5, weight: 700, color: H.muted }, 'payroll');
-      this.hits.payroll = { x: x0, y, w: pw, h: 76 };
-      this.box(x0 + pw + 6, y, cwid, 76, C.panel2);
-      this.label('cashLbl', x0 + pw + 6 + cwid / 2, y + 16, 'CASH', { size: 9.5, weight: 800, color: H.muted, spacing: 1.4 }).setOrigin(0.5, 0);
-      this.label('cash', x0 + pw + 6 + cwid / 2, y + 34, '$0', { size: 18, weight: 800, color: H.gold }).setOrigin(0.5, 0);
-      this.hits.cash = { x: x0 + pw + 6, y, w: cwid, h: 76 };
-      y += 84;
-      const bw = (pw - 20) / 2;
-      this.chipBox = this.scoreBox(x0, y, bw, 52, C.chip, C.chipDeep, 'FEES', H.chipInk, 'base', true);
-      this.label('times', x0 + bw + 10, y + 26, '×', { size: 16, weight: 800, color: H.muted }).setOrigin(0.5);
-      this.multBox = this.scoreBox(x0 + bw + 20, y, bw, 52, C.clay, C.clayDeep, 'MULT', H.clayInk, 'mult', false);
-      this.hits.score = { x: x0, y, w: pw, h: 52 };
-      this.todayBox = this.add.container(u(x0 + pw + 6 + cwid / 2), u(y + 26)).setDepth(DEPTH.hud + 1);
-      this.todayBox.add(text(this, 0, -12, 'TODAY', { size: 9.5, weight: 800, color: H.muted, spacing: 1.4 }).setOrigin(0.5));
-      const tv = text(this, 0, 8, '+$0', { size: 18, weight: 800 }).setOrigin(0.5);
-      this.todayBox.add(tv); this.hud.today = tv; this.boxSprings.today = new Spring(1, 1, 380, 16);
-      y += 60;
-      this.box(x0, y, w, 34, C.panel2, C.line, 1, 'trust');
-      this.meterGeom = { x: x0 + 12, y: y + 17, w, gap: 0, inline: true };
-      this.label('trustLbl', x0 + 12, y + 10, 'Trust', { size: 11, weight: 700, color: H.muted }, 'trust');
-      this.label('trust', x0 + w / 2 - 12, y + 10, '3.0', { size: 11, weight: 800 }, 'trust').setOrigin(1, 0);
-      this.label('heatLbl', x0 + w / 2 + 12, y + 10, 'Heat', { size: 11, weight: 700, color: H.muted }, 'trust');
-      this.label('heat', x0 + w - 12, y + 10, '0', { size: 11, weight: 800 }, 'trust').setOrigin(1, 0);
-      this.hits.meters = { x: x0, y, w, h: 34 };
-      this.feedGeom = null;
-    }
+    this.alarmG = this.add.graphics().setDepth(DEPTH.hud + 1);
+    if (wide) this.buildHudWide(P); else this.buildHudPhone(P);
     this.hudDyn = this.add.graphics().setDepth(DEPTH.hud + 1);
   }
 
-  private payrollGeom = { x: 0, y: 0, w: 0, dotsX: 0, dotsY: 0 };
-  private meterGeom: { x: number; y: number; w: number; gap: number; inline?: boolean } = { x: 0, y: 0, w: 0, gap: 0 };
-  private feedGeom: { x: number; y: number; w: number; bottom: number } | null = null;
-  private hudDyn!: Phaser.GameObjects.Graphics;
-  private feedTexts: Phaser.GameObjects.Text[] = [];
+  private buildHudWide(P: Rect): void {
+    roundRect(this.hudG, P.x, P.y, P.w, P.h, 20, C.panel, 0.94);
+    strokeRect(this.hudG, P.x, P.y, P.w, P.h, 20, C.line, 1);
+    const x0 = P.x + 20, w = P.w - 40;
+    this.brandRow(x0, P.y + 18, w, true);
+    // PAYROLL: the hero. What you owe, when, and whether you can cover it.
+    let y = 106;
+    const ph = 226;
+    this.box(x0, y, w, ph, 0x18120f, 0x3d2a21, 1, 'payroll', 14);
+    this.geo.payBox = { x: x0, y, w, h: ph };
+    this.label('payLbl', x0 + 18, y + 18, 'PAYROLL DUE', { size: 11, weight: 800, color: H.muted, spacing: 1.8 }, 'payroll');
+    this.label('payCycle', x0 + w - 18, y + 18, '', { size: 11, weight: 800, color: H.muted, spacing: 1.4 }, 'payroll').setOrigin(1, 0);
+    this.label('payAmt', x0 + 15, y + 34, '$0', { size: 54, weight: 800 }, 'payroll');
+    this.label('payWhen', x0 + 18, y + 104, '', { size: 13, weight: 800, spacing: 1.4 }, 'payroll');
+    this.label('payDay', x0 + w - 18, y + 104, '', { size: 13, weight: 800, color: H.muted, spacing: 1.2 }, 'payroll').setOrigin(1, 0);
+    this.geo.track = { x: x0 + 18, y: y + 126, w: w - 36, h: 8 };
+    this.label('cashLbl', x0 + 18, y + 152, 'CASH', { size: 11, weight: 800, color: H.muted, spacing: 1.8 });
+    this.label('payGap', x0 + w - 18, y + 152, '', { size: 12, weight: 800, spacing: 1 }, 'payroll').setOrigin(1, 0);
+    this.label('cash', x0 + 16, y + 168, '$0', { size: 30, weight: 800, color: H.gold });
+    this.geo.bar = { x: x0 + 18, y: y + 206, w: w - 36, h: 6 };
+    this.hits.payroll = { x: x0, y, w, h: ph };
+    this.hits.cash = { x: x0, y: y + 144, w, h: ph - 144 };
+    y += ph + 14;
+    // TRUST + HEAT: live gauges, they decide how you die
+    const gh = 150, bw = (w - 12) / 2;
+    (['trust', 'heat'] as const).forEach((key, i) => {
+      const bx = x0 + i * (bw + 12);
+      this.box(bx, y, bw, gh, C.panel2, C.line, 1, 'trust', 14);
+      this.label(`${key}Lbl`, bx + bw / 2, y + 14, key.toUpperCase(), { size: 11, weight: 800, color: H.muted, spacing: 1.8 }, 'trust').setOrigin(0.5, 0);
+      this.label(key, bx + bw / 2, y + 86, '0', { size: 34, weight: 800 }, 'trust').setOrigin(0.5);
+      this.label(`${key}Max`, bx + bw / 2, y + 110, key === 'trust' ? `OF ${BALANCE.maxTrust}` : `OF ${BALANCE.maxHeat}`, { size: 9.5, weight: 800, color: H.muted, spacing: 1.2 }, 'trust').setOrigin(0.5).setAlpha(0.7);
+      this.label(`${key}Fx`, bx + bw / 2, y + 134, '', { size: 11, weight: 800, spacing: 0.8 }, 'trust').setOrigin(0.5);
+      this.geo[key] = { x: bx, y, w: bw, h: gh, arc: true };
+      this.hits[key] = { x: bx, y, w: bw, h: gh };
+    });
+    this.hits.meters = { x: x0, y, w, h: gh };
+    y += gh + 14;
+    // TODAY: a compact receipt, fees x mult = take. Only animates while the day scores.
+    const th = 84;
+    this.box(x0, y, w, th, C.panel2, C.line, 1, undefined, 14);
+    this.label('todayLbl', x0 + 16, y + 14, 'TODAY', { size: 11, weight: 800, color: H.muted, spacing: 1.8 });
+    this.chipBox = this.scorePill(x0 + 16, y + 38, 70, 30, C.chip, C.chipDeep, H.chipInk, 'base', 15);
+    this.label('times', x0 + 16 + 70 + 12, y + 53, '×', { size: 16, weight: 800, color: H.muted }).setOrigin(0.5);
+    this.multBox = this.scorePill(x0 + 16 + 70 + 24, y + 38, 70, 30, C.clay, C.clayDeep, H.clayInk, 'mult', 15);
+    this.todayBox = this.add.container(x0 + w - 16, y + 50).setDepth(DEPTH.hud + 1);
+    const tv = text(this, 0, 0, '+$0', { size: 32, weight: 800 }).setOrigin(1, 0.5);
+    this.todayBox.add(tv); this.hud.today = tv; this.boxSprings.today = new Spring(1, 1, 380, 16);
+    this.hits.score = { x: x0, y, w, h: th };
+    y += th + 14;
+    // VALUATION: the score you're chasing
+    const vh = 88;
+    this.box(x0, y, w, vh, C.panel2, C.line, 1, undefined, 14);
+    this.label('valLbl', x0 + 16, y + 14, 'VALUATION', { size: 11, weight: 800, color: H.muted, spacing: 1.8 });
+    this.label('best', x0 + w - 16, y + 14, '', { size: 11, weight: 800, color: H.goldDeep, spacing: 1.2 }).setOrigin(1, 0);
+    this.label('val', x0 + 15, y + 34, '$0', { size: 34, weight: 800 });
+    this.hits.val = { x: x0, y, w, h: vh };
+    y += vh + 14;
+    // small stats
+    const sw = (w - 16) / 3;
+    [['BOOK', 'book'], ['PEAK', 'peak'], ['REROLL', 'rr']].forEach(([lbl, key], i) => {
+      const bx = x0 + i * (sw + 8);
+      this.box(bx, y, sw, 60, C.panel2, C.line, 1, undefined, 12);
+      this.label(`${key}L`, bx + 12, y + 11, lbl ?? '', { size: 9.5, weight: 800, color: H.muted, spacing: 1.4 });
+      this.label(key ?? '', bx + 12, y + 28, '', { size: 18, weight: 800 });
+    });
+    const by = P.y + P.h - 20 - 46;
+    const b1 = new Button(this, x0, by, (w - 10) / 2, 46, 'HOW IT WORKS', { ...STYLE.dark, size: 11 }).setDepth(DEPTH.hud + 2);
+    b1.onClick = () => this.showHow();
+    const b2 = new Button(this, x0 + (w + 10) / 2, by, (w - 10) / 2, 46, 'NEW FIRM', { ...STYLE.dark, size: 11 }).setDepth(DEPTH.hud + 2);
+    b2.onClick = () => { if (!this.busy) this.newGame('random'); };
+    // right panel frame
+    const S = this.L.side;
+    if (S) {
+      roundRect(this.hudG, S.x, S.y, S.w, S.h, 20, C.panel, 0.94);
+      strokeRect(this.hudG, S.x, S.y, S.w, S.h, 20, C.line, 1);
+    }
+  }
+
+  private buildHudPhone(P: Rect): void {
+    const x0 = P.x, w = P.w;
+    this.brandRow(x0, P.y, w, false);
+    // payroll hero
+    let y = 56;
+    const ph = 124;
+    this.box(x0, y, w, ph, 0x18120f, 0x3d2a21, 0.96, 'payroll', 14);
+    this.geo.payBox = { x: x0, y, w, h: ph };
+    this.label('payLbl', x0 + 14, y + 12, 'PAYROLL DUE', { size: 10, weight: 800, color: H.muted, spacing: 1.4 }, 'payroll');
+    this.label('payAmt', x0 + 12, y + 26, '$0', { size: 38, weight: 800 }, 'payroll');
+    this.label('payWhen', x0 + 14, y + 76, '', { size: 11.5, weight: 800, spacing: 1.1 }, 'payroll');
+    this.geo.track = { x: x0 + 14, y: y + 96, w: 180, h: 6 };
+    this.label('cashLbl', x0 + w - 14, y + 12, 'CASH', { size: 10, weight: 800, color: H.muted, spacing: 1.4 }).setOrigin(1, 0);
+    this.label('cash', x0 + w - 14, y + 28, '$0', { size: 28, weight: 800, color: H.gold }).setOrigin(1, 0);
+    this.label('payGap', x0 + w - 14, y + 66, '', { size: 11.5, weight: 800, spacing: 0.8 }, 'payroll').setOrigin(1, 0);
+    this.label('payCycle', x0 + w - 14, y + 86, '', { size: 10, weight: 800, color: H.muted, spacing: 1.1 }, 'payroll').setOrigin(1, 0);
+    this.geo.bar = { x: x0 + 14, y: y + 110, w: w - 28, h: 5 };
+    this.hits.payroll = { x: x0, y, w, h: ph };
+    this.hits.cash = { x: x0 + w / 2, y, w: w / 2, h: ph };
+    y += ph + 8;
+    // trust + heat
+    const gh = 70, bw = (w - 8) / 2;
+    (['trust', 'heat'] as const).forEach((key, i) => {
+      const bx = x0 + i * (bw + 8);
+      this.box(bx, y, bw, gh, C.panel2, C.line, 0.96, 'trust', 12);
+      this.label(`${key}Lbl`, bx + 12, y + 11, key.toUpperCase(), { size: 10, weight: 800, color: H.muted, spacing: 1.4 }, 'trust');
+      this.label(key, bx + bw - 12, y + 6, '0', { size: 24, weight: 800 }, 'trust').setOrigin(1, 0);
+      this.label(`${key}Fx`, bx + 12, y + 52, '', { size: 10, weight: 800, spacing: 0.6 }, 'trust');
+      this.geo[key] = { x: bx + 12, y: y + 40, w: bw - 24, h: 7, arc: false };
+      this.hits[key] = { x: bx, y, w: bw, h: gh };
+    });
+    this.hits.meters = { x: x0, y, w, h: gh };
+    // today + odds strip
+    const S = this.L.strip;
+    this.box(S.x, S.y, S.w, S.h, C.panel2, C.line, 0.96, undefined, 12);
+    this.chipBox = this.scorePill(S.x + 8, S.y + 8, 56, 24, C.chip, C.chipDeep, H.chipInk, 'base', 13);
+    this.label('times', S.x + 8 + 56 + 8, S.y + 20, '×', { size: 13, weight: 800, color: H.muted }).setOrigin(0.5);
+    this.multBox = this.scorePill(S.x + 8 + 56 + 16, S.y + 8, 56, 24, C.clay, C.clayDeep, H.clayInk, 'mult', 13);
+    this.todayBox = this.add.container(S.x + 146, S.y + 20).setDepth(DEPTH.hud + 1);
+    const tv = text(this, 0, 0, '+$0', { size: 20, weight: 800 }).setOrigin(0, 0.5);
+    this.todayBox.add(tv); this.hud.today = tv; this.boxSprings.today = new Spring(1, 1, 380, 16);
+    this.hits.score = { x: S.x, y: S.y, w: 230, h: S.h };
+  }
 
   private renderHud(): void {
     const s = this.ui.s;
+    const L = this.L;
     const g = this.hudDyn;
     g.clear();
     const firmT = this.hud.firm;
     if (firmT) {
-      const full = this.L.wide ? this.ui.firm : `${this.ui.firm} · Day ${s.day}`;
+      const full = this.ui.firm;
       firmT.setText(full);
-      const max = u(this.L.wide ? 130 : this.L.panel.w - 70 - 120);
+      const max = L.wide ? 200 : L.W - 28 - 82 - 120;
       let cut = full;
       while (firmT.width > max && cut.length > 4) { cut = cut.slice(0, -1); firmT.setText(`${cut.trimEnd()}…`); }
     }
     this.setCash(this.shownCash);
     this.setScore(this.ui.score);
-    const loanDue = s.payroll.loanOwed > 0 && s.payroll.cycle >= s.payroll.loanDueCycle ? s.payroll.loanOwed : 0;
-    const due = s.payroll.amount + loanDue;
+    const due = this.payrollDue();
+    const loanDue = due - s.payroll.amount;
     const days = s.payroll.dueDay - s.day;
-    this.hud.payAmt?.setText(money(due));
-    this.hud.payWhen?.setText(days <= 0 ? 'due tonight' : `in ${days} day${days === 1 ? '' : 's'}`);
     const short = this.shownCash < due;
-    this.hud.payGap?.setText(!short ? `Covered · next ${money(Math.round((s.payroll.amount * BALANCE.payrollGrowth) / 10) * 10)}` : `Need ${money(due - this.shownCash)} more${loanDue ? ' (incl. loan)' : ''}`).setColor(short ? H.clay : H.muted);
-    const showPay = this.ui.revealed.includes('payroll');
-    if (showPay) {
-      const P = this.payrollGeom;
-      roundRect(g, P.x, P.y, P.w, 5, 3, C.paper, 0.1);
-      roundRect(g, P.x, P.y, Math.max(5, P.w * Math.min(1, this.shownCash / due)), 5, 3, short ? C.clay : C.paper);
-      const elapsed = Math.max(0, BALANCE.cycleDays - Math.max(0, days) - 1);
-      for (let k = 0; k < BALANCE.cycleDays; k++) {
-        const cx = P.dotsX - (BALANCE.cycleDays - 1 - k) * 13 - 4;
-        if (k < elapsed) { g.fillStyle(C.clay, 1); g.fillCircle(u(cx), u(P.dotsY + 6), u(4)); }
-        else { g.lineStyle(u(1.5), C.clay, 1); g.strokeCircle(u(cx), u(P.dotsY + 6), u(3.6)); }
+    this.urgent = days <= 1 && short && this.ui.revealed.includes('payroll');
+    this.hud.payAmt?.setText(money(due));
+    this.hud.payWhen?.setText(days <= 0 ? 'DUE TONIGHT' : `DUE IN ${days} DAY${days === 1 ? '' : 'S'}`).setColor(days <= 1 ? H.clay : H.paper);
+    this.hud.payCycle?.setText(L.wide ? `CYCLE ${s.payroll.cycle}${loanDue ? ' · +LOAN' : ''}` : `DAY ${s.day} · CYCLE ${s.payroll.cycle}`);
+    this.hud.payDay?.setText(`DAY ${s.day}`);
+    this.hud.payGap?.setText(short ? `NEED ${money(due - this.shownCash)} MORE` : 'COVERED').setColor(short ? H.clay : H.gold);
+    if (this.ui.revealed.includes('payroll')) {
+      // day track: one segment per day of the cycle; the last one is payday
+      const T = this.geo.track, n = BALANCE.cycleDays, sg = 4;
+      const segW = (T.w - sg * (n - 1)) / n;
+      const at = Math.max(1, Math.min(n, n - Math.max(0, days)));
+      for (let k = 0; k < n; k++) {
+        const x = T.x + k * (segW + sg);
+        const isNow = k === at - 1, past = k < at - 1, payday = k === n - 1;
+        if (past) roundRect(g, x, T.y, segW, T.h, T.h / 2, C.paper, 0.45);
+        else if (isNow) roundRect(g, x, T.y, segW, T.h, T.h / 2, days <= 1 ? C.clay : C.paper, 1);
+        else roundRect(g, x, T.y, segW, T.h, T.h / 2, C.paper, 0.1);
+        if (payday && !isNow) strokeRect(g, x, T.y, segW, T.h, T.h / 2, C.clay, 1, 0.8);
       }
+      const B = this.geo.bar;
+      const f = Math.min(1, this.shownCash / Math.max(1, due));
+      roundRect(g, B.x, B.y, B.w, B.h, B.h / 2, C.paper, 0.1);
+      if (f > 0) roundRect(g, B.x, B.y, Math.max(B.h, B.w * f), B.h, B.h / 2, short ? C.clay : C.gold);
     }
-    // meters
-    const M = this.meterGeom;
-    if (this.ui.revealed.includes('trust')) {
-      const drawDots = (x: number, y: number, w: number, n: number, color: number): void => {
-        const step = w / 10;
-        for (let k = 0; k < 10; k++) { g.fillStyle(k < n ? color : C.paper, k < n ? 1 : 0.1); g.fillRoundedRect(u(x + k * step), u(y - 3), u(step - 3), u(6), u(3)); }
-      };
-      if (M.inline) {
-        const half = M.w / 2;
-        drawDots(M.x + 40, M.y, half - 88, Math.round(s.trust * 2), C.plat);
-        drawDots(M.x + half + 36, M.y, half - 82, Math.round(s.heat / 10), s.heat >= 60 ? C.clay : C.bronze);
-      } else {
-        drawDots(M.x + 40, M.y, M.w - 70, Math.round(s.trust * 2), C.plat);
-        drawDots(M.x + 40, M.y + M.gap, M.w - 70, Math.round(s.heat / 10), s.heat >= 60 ? C.clay : C.bronze);
-      }
+    // gauges
+    const trustOn = this.ui.revealed.includes('trust');
+    const tf = s.trust / BALANCE.maxTrust, hf = s.heat / BALANCE.maxHeat;
+    const trustCol = s.trust < 1.5 ? C.clay : C.plat;
+    const heatCol = s.heat >= 60 ? C.clay : C.bronze;
+    this.hot = trustOn && s.heat >= 60;
+    if (trustOn) {
+      this.drawGauge(g, this.geo.trust, tf, trustCol);
+      this.drawGauge(g, this.geo.heat, hf, heatCol);
     }
-    this.hud.trust?.setText(s.trust.toFixed(1));
+    this.hud.trust?.setText(s.trust.toFixed(1)).setColor(s.trust < 1.5 ? H.clay : H.paper);
     this.hud.heat?.setText(String(Math.round(s.heat))).setColor(s.heat >= 60 ? H.clay : H.paper);
-    this.hud.day?.setText(String(s.day));
-    this.hud.cycle?.setText(String(s.payroll.cycle));
+    this.hud.trustFx?.setText(`FEES ×${trustMultiplier(s.trust).toFixed(2)}`).setColor(s.trust < 1.5 ? H.clay : H.plat);
+    const hw = heatWord(s.heat);
+    this.hud.heatFx?.setText(hw.word).setColor(hw.color);
+    // alarm ring around payroll when it can't be covered
+    this.alarmG.clear();
+    if (this.urgent) { const P = this.geo.payBox; strokeRect(this.alarmG, P.x - 1, P.y - 1, P.w + 2, P.h + 2, 15, C.clay, 2.5); }
+    // score + stats
+    const best = store<{ days: number; val: number }>('best');
+    this.hud.val?.setText(money(valuation(s)));
+    this.hud.best?.setText(best?.val ? `BEST ${money(best.val)}` : '');
+    this.hud.peak?.setText(money(s.stats.peakValuation));
     this.hud.rr?.setText(money(rerollPrice(s)));
-    this.hud.book?.setText(String(s.grid.filter(Boolean).length));
+    this.hud.book?.setText(`${s.grid.filter(Boolean).length}/20`);
     this.bg?.setUniform('uHeat.value', s.heat / 100);
-    // feed
-    this.feedTexts.forEach((t) => t.destroy());
-    this.feedTexts = [];
-    if (this.feedGeom) {
-      let fy = this.feedGeom.y;
-      for (const p of s.feed.slice(0, 5)) {
-        const h = text(this, this.feedGeom.x, fy, p.handle, { size: 11.5, weight: 800, color: p.tone === 'bad' ? H.clay : p.tone === 'good' ? H.gold : H.paper }).setDepth(DEPTH.hud + 1);
-        const b = text(this, this.feedGeom.x, fy + 16, p.text, { size: 11.5, weight: 600, color: H.muted, wrap: this.feedGeom.w, lineSpacing: 2 }).setDepth(DEPTH.hud + 1);
-        const bottom = fy + 16 + b.height / u(1);
-        if (bottom > this.feedGeom.bottom) { h.destroy(); b.destroy(); break; }
-        this.feedTexts.push(h, b);
-        fy = bottom + 10;
-      }
-    }
     for (const [key, objs] of Object.entries(this.veiled)) objs.forEach((o) => (o as unknown as Phaser.GameObjects.Components.Visible).setVisible(this.ui.revealed.includes(key)));
+  }
+
+  /** Arc gauge (desktop) or bar gauge (phone). */
+  private drawGauge(g: Phaser.GameObjects.Graphics, G: Gauge, f: number, color: number): void {
+    f = Math.max(0, Math.min(1, f));
+    if (!G.arc) {
+      roundRect(g, G.x, G.y, G.w, G.h, G.h / 2, C.paper, 0.1);
+      if (f > 0) roundRect(g, G.x, G.y, Math.max(G.h, G.w * f), G.h, G.h / 2, color);
+      return;
+    }
+    const cx = G.x + G.w / 2, cy = G.y + 88, r = 52, th = 10;
+    const a0 = Phaser.Math.DegToRad(135), sweep = Phaser.Math.DegToRad(270);
+    g.lineStyle(th, C.paper, 0.08);
+    g.beginPath(); g.arc(cx, cy, r, a0, a0 + sweep, false); g.strokePath();
+    // ticks
+    for (let k = 0; k <= 10; k++) {
+      const a = a0 + (sweep * k) / 10;
+      g.lineStyle(1.5, C.paper, 0.18);
+      g.lineBetween(cx + Math.cos(a) * (r + 9), cy + Math.sin(a) * (r + 9), cx + Math.cos(a) * (r + 13), cy + Math.sin(a) * (r + 13));
+    }
+    if (f > 0.005) {
+      g.lineStyle(th, color, 1);
+      g.beginPath(); g.arc(cx, cy, r, a0, a0 + sweep * f, false); g.strokePath();
+      const a = a0 + sweep * f;
+      g.fillStyle(color, 1); g.fillCircle(cx + Math.cos(a) * r, cy + Math.sin(a) * r, th * 0.62);
+    }
   }
 
   private setCash(v: number): void { this.shownCash = v; this.hud.cash?.setText(money(v)); }
   private setScore(sc: Score): void {
     this.hud.base?.setText(Math.round(sc.base).toLocaleString('en-US'));
-    this.hud.mult?.setText(sc.mult.toFixed(sc.mult >= 10 ? 0 : 2));
-    this.hud.today?.setText(signed(sc.today));
+    this.hud.mult?.setText(`×${sc.mult.toFixed(sc.mult >= 10 ? 0 : 2)}`);
+    this.hud.today?.setText(signed(sc.today)).setColor(sc.today < 0 ? H.clay : H.paper);
   }
 
-  // ---------------------------------------------------------------- top row: excuses + tape
+  // ---------------------------------------------------------------- market strip, excuses, the wire
 
   private buildRow(): void {
     this.rowLayer = this.add.container(0, 0).setDepth(DEPTH.hud);
+    if (this.L.wide) {
+      const S = this.L.strip;
+      roundRect(this.hudG, S.x, S.y, S.w, S.h, 16, C.panel, 0.9);
+      strokeRect(this.hudG, S.x, S.y, S.w, S.h, 16, C.line, 1);
+    }
   }
 
   private renderRow(): void {
-    const R = this.L.row;
+    const L = this.L;
     this.rowLayer.removeAll(true);
     const s = this.ui.s;
-    // excuses as clay pills
-    let x = R.x;
+    const g = this.add.graphics();
+    this.rowLayer.add(g);
+    const add = (t: Phaser.GameObjects.Text): Phaser.GameObjects.Text => { this.rowLayer.add(t); return t; };
+    const f = s.forecast;
+    const odds: [Candle, number][] = [['chop', f.chop], ['up', f.up], ['down', f.down], ['news', f.news]];
+    const oddsBar = (x: number, y: number, w: number, h: number): void => {
+      let ox = x;
+      odds.forEach(([c, p], k) => {
+        const sw = w * p;
+        if (sw <= 0) return;
+        g.fillStyle(CANDLE_COLOR[c], c === 'chop' ? 0.75 : 1);
+        g.fillRect(ox, y, Math.max(0, sw - (k < 3 ? 2 : 0)), h);
+        ox += sw;
+      });
+    };
+    if (L.wide) {
+      const S = L.strip;
+      if (this.ui.revealed.includes('odds')) {
+        add(text(this, S.x + 18, S.y + 12, 'LAST CANDLES', { size: 10, weight: 800, color: H.muted, spacing: 1.6 }));
+        const tape = this.ui.tape.slice(-22);
+        const mid = S.y + 42;
+        if (!tape.length) add(text(this, S.x + 18, mid - 8, 'none yet', { size: 12, weight: 600, color: H.muted }));
+        tape.forEach((c, k) => {
+          const x = S.x + 22 + k * 14;
+          const col = CANDLE_COLOR[c];
+          const body = c === 'chop' ? 5 : c === 'news' ? 22 : 16;
+          const off = c === 'up' ? -4 : c === 'down' ? 4 : 0;
+          g.fillStyle(col, 0.8); g.fillRect(x - 0.75, mid - 14 + off, 1.5, 28);
+          g.fillStyle(col, 1); g.fillRoundedRect(x - 4, mid - body / 2 + off, 8, body, 1.5);
+        });
+        const bw = 300, bx = S.x + S.w - 18 - bw;
+        add(text(this, bx, S.y + 12, 'NEXT CANDLE ODDS', { size: 10, weight: 800, color: H.muted, spacing: 1.6 }));
+        g.fillStyle(C.paper, 0.06); g.fillRoundedRect(bx, S.y + 30, bw, 8, 3);
+        oddsBar(bx, S.y + 30, bw, 8);
+        let lx = bx;
+        odds.forEach(([c, p]) => {
+          const t = add(text(this, lx, S.y + 44, `${CANDLE[c] === 'TREND UP' ? 'UP' : CANDLE[c] === 'TREND DOWN' ? 'DOWN' : CANDLE[c]} ${Math.round(p * 100)}%`, { size: 10.5, weight: 800, color: c === 'down' ? H.clay : c === 'news' ? H.gold : c === 'chop' ? H.muted : H.paper, spacing: 0.6 }));
+          lx += Math.max(bw * p, t.width + 10);
+        });
+        this.hits.odds = { ...S };
+      }
+      // right panel: excuses in hand, then the wire
+      const R = L.side as Rect;
+      const x0 = R.x + 20, w = R.w - 40;
+      let y = R.y + 22;
+      if (this.ui.revealed.includes('hand')) {
+        add(text(this, x0, y, 'EXCUSES IN HAND', { size: 11, weight: 800, color: H.muted, spacing: 1.8 }));
+        add(text(this, x0 + w, y, String(s.excuses.length), { size: 11, weight: 800, color: H.blush }).setOrigin(1, 0));
+        y += 26;
+        if (!s.excuses.length) {
+          const t = add(text(this, x0, y, 'None. Any denial right now is a ghost, the worst kind.', { size: 12, weight: 600, color: H.muted, wrap: w }));
+          y += t.height + 16;
+        }
+        for (const e of s.excuses.slice(0, 5)) {
+          const d = excuseDef(e);
+          const used = s.stats.excuseUses[e] ?? 0;
+          const nm = text(this, x0 + 14, y + 10, d.name, { size: 13, weight: 800, color: H.blush });
+          const bl = text(this, x0 + 14, y + 30, `${d.blurb}${used ? ` Used ${used}×.` : ''}`, { size: 11, weight: 600, color: H.muted, wrap: w - 28, lineSpacing: 1 });
+          const hh = 40 + bl.height;
+          roundRect(g, x0, y, w, hh, 12, C.clay, 0.08);
+          strokeRect(g, x0, y, w, hh, 12, C.clay, 1, 0.3);
+          add(nm); add(bl);
+          y += hh + 8;
+        }
+        this.hits.excuses = { x: x0, y: R.y + 20, w, h: y - R.y - 20 };
+        y += 14;
+      }
+      g.fillStyle(C.line2, 1); g.fillRect(x0, y, w, 1);
+      y += 16;
+      add(text(this, x0, y, 'THE WIRE', { size: 11, weight: 800, color: H.muted, spacing: 1.8 }));
+      y += 26;
+      const bottom = R.y + R.h - 20;
+      for (const p of s.feed.slice(0, 8)) {
+        const h = text(this, x0, y, p.handle, { size: 12, weight: 800, color: p.tone === 'bad' ? H.clay : p.tone === 'good' ? H.gold : H.paper });
+        const b = text(this, x0, y + 18, p.text, { size: 12, weight: 600, color: H.muted, wrap: w, lineSpacing: 2 });
+        if (y + 18 + b.height > bottom) { h.destroy(); b.destroy(); break; }
+        add(h); add(b);
+        y += 18 + b.height + 14;
+      }
+      if (!s.feed.length) add(text(this, x0, y, 'Quiet, for now.', { size: 12, weight: 600, color: H.muted }));
+      this.hits.wire = { x: x0, y: R.y, w, h: R.h };
+      return;
+    }
+    // phone: odds on the right of the strip, excuses as chips below
+    const S = L.strip;
+    if (this.ui.revealed.includes('odds')) {
+      const bw = 150, bx = S.x + S.w - 12 - bw;
+      add(text(this, bx, S.y + 7, 'NEXT', { size: 9, weight: 800, color: H.muted, spacing: 1.2 }));
+      g.fillStyle(C.paper, 0.06); g.fillRect(bx, S.y + 20, bw, 6);
+      oddsBar(bx, S.y + 20, bw, 6);
+      add(text(this, bx + bw, S.y + 7, `C${Math.round(f.chop * 100)} U${Math.round(f.up * 100)} D${Math.round(f.down * 100)} N${Math.round(f.news * 100)}`, { size: 9.5, weight: 800, color: H.muted }).setOrigin(1, 0));
+      this.hits.odds = { x: bx - 8, y: S.y, w: bw + 20, h: S.h };
+    }
     if (this.ui.revealed.includes('hand')) {
-      const list = s.excuses.length ? s.excuses.map((e) => excuseDef(e).name) : ['No excuses'];
+      const R = L.hand;
+      let x = R.x;
+      const list = s.excuses.length ? s.excuses.map((e) => excuseDef(e).name) : ['No excuses in hand'];
+      add(text(this, x, R.y + R.h / 2, 'EXCUSES', { size: 9.5, weight: 800, color: H.muted, spacing: 1.2 }).setOrigin(0, 0.5));
+      x += 62;
       for (const name of list) {
-        const t = text(this, 0, 0, name, { size: this.L.wide ? 11.5 : 10.5, weight: 800, color: s.excuses.length ? H.blush : H.muted });
-        const tw = t.width / u(1) + 18;
-        if (x + tw > R.x + R.w * (this.L.wide ? 0.6 : 0.52)) { t.destroy(); break; }
-        const g = this.add.graphics();
-        roundRect(g, x, R.y + 4, tw, R.h - 8, 8, C.clay, s.excuses.length ? 0.12 : 0);
-        strokeRect(g, x, R.y + 4, tw, R.h - 8, 8, s.excuses.length ? C.clay : C.line2, 1, s.excuses.length ? 0.45 : 1);
-        t.setPosition(u(x + 9), u(R.y + R.h / 2)).setOrigin(0, 0.5);
-        this.rowLayer.add([g, t]);
+        const t = text(this, 0, 0, name, { size: 10.5, weight: 800, color: s.excuses.length ? H.blush : H.muted });
+        const tw = t.width + 18;
+        if (x + tw > R.x + R.w) { t.destroy(); break; }
+        roundRect(g, x, R.y, tw, R.h, 8, C.clay, s.excuses.length ? 0.12 : 0);
+        strokeRect(g, x, R.y, tw, R.h, 8, s.excuses.length ? C.clay : C.line2, 1, s.excuses.length ? 0.45 : 1);
+        t.setPosition(x + 9, R.y + R.h / 2).setOrigin(0, 0.5);
+        add(t);
         x += tw + 6;
       }
-      this.hits.excuses = { x: R.x, y: R.y, w: Math.max(40, x - R.x), h: R.h };
-    }
-    if (this.ui.revealed.includes('odds')) {
-      const f = s.forecast;
-      const odds = this.L.wide
-        ? `Next  Chop ${Math.round(f.chop * 100)}% · Up ${Math.round(f.up * 100)}% · Dn ${Math.round(f.down * 100)}% · News ${Math.round(f.news * 100)}%`
-        : `C${Math.round(f.chop * 100)} U${Math.round(f.up * 100)} D${Math.round(f.down * 100)} N${Math.round(f.news * 100)}`;
-      const ot = text(this, R.x + R.w, R.y + R.h / 2, odds, { size: this.L.wide ? 12 : 11, weight: 700, color: H.muted }).setOrigin(1, 0.5);
-      this.rowLayer.add(ot);
-      const g = this.add.graphics();
-      const tape = this.ui.tape.slice(-14);
-      let tx = R.x + R.w - ot.width / u(1) - 12 - tape.length * 7;
-      const base = R.y + R.h / 2 + 10;
-      for (const c of tape) {
-        const h = c === 'chop' ? 6 : c === 'news' ? 22 : 17;
-        g.fillStyle(c === 'chop' ? C.muted : c === 'up' ? C.paper : c === 'down' ? C.clay : C.gold, 1);
-        g.fillRoundedRect(u(tx), u(base - h), u(4), u(h), u(1));
-        tx += 7;
-      }
-      this.rowLayer.add(g);
-      this.hits.odds = { x: R.x + R.w * 0.5, y: R.y, w: R.w * 0.5, h: R.h };
+      this.hits.excuses = { ...R };
     }
   }
 
@@ -517,8 +695,7 @@ export class FirmScene extends Phaser.Scene {
     s.grid.forEach((c, i) => {
       const cv = this.cards[i];
       if (!cv) return;
-      if (cv.card !== c || !c) cv.setCard(c);
-      else cv.setCard(c);
+      cv.setCard(c);
       cv.dim = placing && !!c;
       if (placing && !c) {
         const p = this.slotPos(i);
@@ -535,18 +712,21 @@ export class FirmScene extends Phaser.Scene {
 
   private buildBar(): void {
     const A = this.L.cta;
-    this.cta = new Button(this, A.x, A.y, A.w, A.h, 'OPEN MARKET', { ...STYLE.clay, size: this.L.wide ? 22 : 18, spacing: this.L.wide ? 3 : 2.4, sub: `Day ${this.ui.s.day}` }).setDepth(DEPTH.hud + 2);
+    const wide = this.L.wide;
+    this.cta = new Button(this, A.x, A.y, A.w, A.h, 'OPEN MARKET', { ...STYLE.clay, size: wide ? 24 : 19, spacing: wide ? 4 : 2.6, sub: `Day ${this.ui.s.day}` }).setDepth(DEPTH.hud + 2);
     this.cta.onClick = () => void this.onTap();
     this.hits.cta = { ...A };
     const M = this.L.moves;
     if (M) {
       const s = this.ui.s;
       const legal = legalActions(s);
-      const bw = (M.w - 8) / 2;
-      const sale = new Button(this, M.x, M.y, bw, M.h, 'FLASH SALE', { fill: C.panel, deep: 0x050506, ink: H.gold, stroke: C.goldDeep, size: 12, sub: `+${money(100 + 100 * s.payroll.cycle)} · 3 strangers · −Trust` }).setDepth(DEPTH.hud + 2);
+      const r1 = wide ? { x: M.x, y: M.y, w: 150, h: M.h } : { x: M.x, y: M.y, w: (M.w - 8) / 2, h: M.h };
+      const r2 = wide ? { x: M.x + M.w - 150, y: M.y, w: 150, h: M.h } : { x: M.x + (M.w + 8) / 2, y: M.y, w: (M.w - 8) / 2, h: M.h };
+      const mv = { fill: C.panel, deep: 0x050506, ink: H.gold, stroke: C.goldDeep, size: 12 };
+      const sale = new Button(this, r1.x, r1.y, r1.w, r1.h, 'FLASH SALE', { ...mv, sub: `+${money(100 + 100 * s.payroll.cycle)} · −Trust` }).setDepth(DEPTH.hud + 2);
       sale.setEnabled(legal.some((a) => a.type === 'flashSale'));
       sale.onClick = () => { if (this.gate('sale')) this.act({ type: 'flashSale' }, 'Flash sale. Cash in, strangers in.'); };
-      const loan = new Button(this, M.x + bw + 8, M.y, bw, M.h, 'FOUNDER LOAN', { fill: C.panel, deep: 0x050506, ink: H.gold, stroke: C.goldDeep, size: 12, sub: `+${money(s.payroll.amount)} · repay ${money(Math.round(s.payroll.amount * 1.6))}` }).setDepth(DEPTH.hud + 2);
+      const loan = new Button(this, r2.x, r2.y, r2.w, r2.h, 'FOUNDER LOAN', { ...mv, sub: `+${money(s.payroll.amount)} · owe ${money(Math.round(s.payroll.amount * 1.6))}` }).setDepth(DEPTH.hud + 2);
       loan.setEnabled(legal.some((a) => a.type === 'loan'));
       loan.onClick = () => { if (this.gate('loan')) this.act({ type: 'loan' }, 'Loan taken. It comes back with interest.'); };
       this.moveBtns = [sale, loan];
@@ -561,11 +741,7 @@ export class FirmScene extends Phaser.Scene {
     this.cta.setVisible(show);
     this.cta.setLabel('OPEN MARKET', `Day ${s.day}${this.ui.mode !== 'tutorial' && this.L.wide ? ' · space' : ''}`);
     this.moveBtns.forEach((b) => b.setVisible(show));
-    const needMoves = (() => {
-      const due = s.payroll.amount + (s.payroll.loanOwed > 0 && s.payroll.cycle >= s.payroll.loanDueCycle ? s.payroll.loanOwed : 0);
-      return this.ui.mode !== 'tutorial' && s.phase === 'morning' && s.cash < due && s.payroll.dueDay - s.day <= 1;
-    })();
-    if (needMoves !== !!this.L.moves) this.requestRebuild();
+    if (this.desperate() !== !!this.L.moves) this.requestRebuild();
   }
 
   private renderAll(): void {
@@ -580,23 +756,26 @@ export class FirmScene extends Phaser.Scene {
 
   update(_t: number, dtMs: number): void {
     const dt = Math.min(0.05, dtMs / 1000);
+    this.clock += dt;
     for (const [key, sp] of Object.entries(this.boxSprings)) {
       const v = sp.step(dt);
       const target = key === 'base' ? this.chipBox : key === 'mult' ? this.multBox : this.todayBox;
       target?.setScale(v).setRotation((1 - v) * 0.4);
     }
+    this.alarmG?.setAlpha(this.urgent ? 0.45 + 0.55 * Math.abs(Math.sin(this.clock * 3.2)) : 0);
+    if (this.hot) this.hud.heat?.setScale(1 + 0.05 * Math.sin(this.clock * 6));
     this.pulse.a *= Math.pow(0.12, dt);
     this.spin += dt * (0.02 + this.pulse.a * 0.5);
     this.bg?.setUniform('uSpin.value', this.spin);
     this.bg?.setUniform('uPulse.value', { x: this.pulse.r, y: this.pulse.g, z: this.pulse.b, w: this.pulse.a });
-    if (this.crt) { this.crt.dpr = window.devicePixelRatio; this.crt.shake *= Math.pow(0.02, dt); }
+    if (this.crt) { this.crt.dpr = Math.max(1, this.L.k); this.crt.shake *= Math.pow(0.02, dt); }
     if (this.fire && this.fire.emitting) {
       const b = this.todayBox.getBounds();
       this.fire.setPosition(b.centerX, b.top + b.height * 0.3);
     }
   }
 
-  private bump(key: string, amt = 1): void { this.boxSprings[key]?.kick(4 * amt); const sp = this.boxSprings[key]; if (sp) sp.x = 1 + 0.12 * amt; }
+  private bump(key: string, amt = 1): void { this.boxSprings[key]?.kick(4 * amt); const sp = this.boxSprings[key]; if (sp) sp.x = 1 + 0.18 * amt; }
   private pulseBg(color: number, amt: number): void {
     this.pulse = { r: ((color >> 16) & 255) / 255, g: ((color >> 8) & 255) / 255, b: (color & 255) / 255, a: Math.min(1.2, this.pulse.a + amt) };
   }
@@ -843,37 +1022,38 @@ export class FirmScene extends Phaser.Scene {
     this.shop = null;
     delete this.hits.shop; delete this.hits.offers;
     if (s.phase !== 'draft') return;
-    const { W, H: Hh, wide } = this.L;
+    const { W, H: Hh, wide, center: CT, view: V } = this.L;
     const root = this.add.container(0, 0).setDepth(DEPTH.shop);
     this.shop = root;
+    const below = Math.max(0, V.y + V.h - Hh) + 24;
     if (this.ui.selected !== null) {
       const o = s.offers[this.ui.selected];
-      const bw = Math.min(wide ? 700 : W - 20, W - 20), bh = wide ? 76 : 70;
-      const bx = (W - bw) / 2, by = wide ? Hh - bh : 0;
+      const bw = wide ? CT.w : W - 20, bh = wide ? 84 : 76;
+      const bx = wide ? CT.x : 10, by = Hh - bh - (wide ? 16 : 6);
       const g = this.add.graphics();
-      roundRect(g, bx, by, bw, bh + 18, 16, C.panel, 0.97);
-      strokeRect(g, bx, by, bw, bh + 18, 16, C.line2, 1);
-      const t = text(this, bx + 18, by + (wide ? 18 : 12), `PLACE ${o ? offerName(o).toUpperCase() : ''}`, { size: 13, weight: 800, spacing: 2.4 });
-      const sub = text(this, bx + 18, by + (wide ? 42 : 34), 'Tap a slot on the book', { size: 12, weight: 600, color: H.muted });
+      roundRect(g, bx, by, bw, bh, 16, C.panel, 0.97);
+      strokeRect(g, bx, by, bw, bh, 16, C.gold, 1, 0.5);
+      const t = text(this, bx + 18, by + (wide ? 20 : 16), `PLACE ${o ? offerName(o).toUpperCase() : ''}`, { size: wide ? 15 : 13, weight: 800, spacing: 2.4, color: H.gold });
+      const sub = text(this, bx + 18, by + (wide ? 46 : 40), 'Tap a glowing slot on the book', { size: 12, weight: 600, color: H.muted });
       root.add([g, t, sub]);
-      const back = new Button(this, bx + bw - 236, by + (wide ? 16 : 14), 108, 44, 'BACK', { ...STYLE.dark, size: 11 });
+      const back = new Button(this, bx + bw - 236, by + (bh - 48) / 2, 108, 48, 'BACK', { ...STYLE.dark, size: 11 });
       back.onClick = () => { this.ui.selected = null; this.renderGrid(); this.renderShop(); };
-      const skip = new Button(this, bx + bw - 120, by + (wide ? 16 : 14), 104, 44, 'SKIP', { ...STYLE.dark, size: 11 });
+      const skip = new Button(this, bx + bw - 120, by + (bh - 48) / 2, 104, 48, 'SKIP', { ...STYLE.dark, size: 11 });
       skip.onClick = () => { if (!this.gate('skip')) return; this.ui.selected = null; this.act({ type: 'draft', pick: null }); this.emit('drafted'); };
       root.add([back, skip]);
       this.hits.shop = { x: bx, y: by, w: bw, h: bh };
-      root.y = u(wide ? 40 : -40); root.setAlpha(0);
+      root.y = 40; root.setAlpha(0);
       this.tweens.add({ targets: root, y: 0, alpha: 1, duration: 220, ease: 'Cubic.easeOut' });
       return;
     }
-    const pw = Math.min(wide ? 860 : W, W - (wide ? 40 : 0));
+    const pw = wide ? CT.w : W;
     const pad = wide ? 20 : 12;
-    const cardH = wide ? 250 : Math.min(214, Hh * 0.27);
-    const ph = pad + 22 + 14 + cardH + 14 + 46 + pad + 8;
-    const px = (W - pw) / 2, py = Hh - ph + 8;
+    const cardH = wide ? 280 : Math.min(230, Hh * 0.27);
+    const ph = pad + 22 + 14 + cardH + 14 + 50 + pad + 8;
+    const px = wide ? CT.x : 0, py = Hh - ph + 8;
     const g = this.add.graphics();
-    roundRect(g, px, py, pw, ph + 20, 20, C.panel, 0.97);
-    strokeRect(g, px, py, pw, ph + 20, 20, C.line2, 1);
+    roundRect(g, px, py, pw, ph + below, 20, C.panel, 0.97);
+    strokeRect(g, px, py, pw, ph + below, 20, C.line2, 1);
     root.add(g);
     root.add(text(this, px + pad + 2, py + pad, 'HIRE', { size: 14, weight: 800, spacing: 3.4 }));
     root.add(text(this, px + pw - pad - 2, py + pad + 2, `cash ${money(s.cash)} · payroll ${money(s.payroll.amount)} in ${Math.max(0, s.payroll.dueDay - s.day)}d`, { size: 12, weight: 700, color: H.muted }).setOrigin(1, 0));
@@ -886,16 +1066,16 @@ export class FirmScene extends Phaser.Scene {
     });
     this.hits.offers = { x: px + pad, y: oy, w: pw - 2 * pad, h: cardH };
     const by = oy + cardH + 14, bw = (pw - 2 * pad - 10) / 2;
-    const rr = new Button(this, px + pad, by, bw, 46, `REROLL · ${money(rerollPrice(s))}`, { ...STYLE.dark, size: 12 });
+    const rr = new Button(this, px + pad, by, bw, 50, `REROLL · ${money(rerollPrice(s))}`, { ...STYLE.dark, size: 12 });
     rr.setEnabled(s.cash >= rerollPrice(s));
     rr.onClick = () => { if (!this.gate('reroll')) return; J.tick(); this.act({ type: 'reroll' }); };
-    const sk = new Button(this, px + pad + bw + 10, by, bw, 46, 'SKIP', { ...STYLE.gold, size: 12 });
+    const sk = new Button(this, px + pad + bw + 10, by, bw, 50, 'SKIP', { ...STYLE.gold, size: 12 });
     sk.onClick = () => { if (!this.gate('skip')) return; this.act({ type: 'draft', pick: null }); this.emit('drafted'); };
     root.add([rr, sk]);
-    this.hits.reroll = { x: px + pad, y: by, w: bw, h: 46 };
-    this.hits.skip = { x: px + pad + bw + 10, y: by, w: bw, h: 46 };
+    this.hits.reroll = { x: px + pad, y: by, w: bw, h: 50 };
+    this.hits.skip = { x: px + pad + bw + 10, y: by, w: bw, h: 50 };
     this.hits.shop = { x: px, y: py, w: pw, h: ph };
-    if (!wasOpen) { root.y = u(ph); this.tweens.add({ targets: root, y: 0, duration: 340, ease: 'Back.easeOut', easeParams: [0.9] }); }
+    if (!wasOpen) { root.y = ph; this.tweens.add({ targets: root, y: 0, duration: 340, ease: 'Back.easeOut', easeParams: [0.9] }); }
   }
 
   private offerCard(o: Offer, i: number, x: number, y: number, w: number, h: number): Phaser.GameObjects.Container {
@@ -963,9 +1143,9 @@ export class FirmScene extends Phaser.Scene {
   /** A modal: dims the game and builds content into a panel. Returns the content container. */
   private modal(kind: string, width: number, build: (c: Phaser.GameObjects.Container, w: number) => number, opts: { paper?: boolean; center?: boolean } = {}): { root: Phaser.GameObjects.Container; content: Phaser.GameObjects.Container; x: number; y: number } {
     this.closeOverlay();
-    const { W, H: Hh, wide } = this.L;
+    const { W, H: Hh, wide, view: V } = this.L;
     const root = this.add.container(0, 0).setDepth(DEPTH.overlay);
-    const dim = this.add.rectangle(0, 0, u(W), u(Hh), C.ink, 0.74).setOrigin(0).setInteractive();
+    const dim = this.add.rectangle(V.x, V.y, V.w, V.h, C.ink, 0.74).setOrigin(0).setInteractive();
     root.add(dim);
     const pw = Math.min(width, W - (wide || opts.center ? 28 : 0));
     const content = this.add.container(0, 0);
@@ -974,7 +1154,7 @@ export class FirmScene extends Phaser.Scene {
     const px = (W - pw) / 2, py = center ? Math.max(14, (Hh - h) / 2) : Hh - h;
     const g = this.add.graphics();
     if (opts.paper) { roundRect(g, 0, 8, pw, h, 18, 0x000000, 0.5); roundRect(g, 0, 0, pw, h, 18, C.paper); }
-    else { roundRect(g, 0, 0, pw, h + (center ? 0 : 20), 20, C.panel); strokeRect(g, 0, 0, pw, h + (center ? 0 : 20), 20, C.line2, 1); }
+    else { const ext = center ? 0 : Math.max(0, V.y + V.h - Hh) + 20; roundRect(g, 0, 0, pw, h + ext, 20, C.panel); strokeRect(g, 0, 0, pw, h + ext, 20, C.line2, 1); }
     content.addAt(g, 0);
     content.setPosition(u(px), u(py));
     root.add(content);
@@ -1009,7 +1189,7 @@ export class FirmScene extends Phaser.Scene {
     const m = this.modal('payout', 540, (c, w) => {
       let y = pad;
       c.add(text(this, pad, y, `PAYOUT REQUEST${s.queue.length > 1 ? ` · ${s.queue.length} WAITING` : ''}`, { size: 10.5, weight: 800, color: H.muted, spacing: 1.8 }));
-      y += 26;
+      y += 40;
       const cw = 100, ch = 138;
       cardView = new CardView(this, cw, ch).setCard(card);
       cardView.sway = false;
@@ -1265,7 +1445,7 @@ export class FirmScene extends Phaser.Scene {
     const g = this.add.graphics();
     roundRect(g, -w / 2, -h / 2 + 4, w, h, 12, 0x000000, 0.4);
     roundRect(g, -w / 2, -h / 2, w, h, 12, C.paper);
-    const c = this.add.container(u(this.L.W / 2), u(this.L.wide ? 30 : 20 + h / 2), [g, t]).setDepth(DEPTH.toast);
+    const c = this.add.container(this.L.wide ? this.L.center.x + this.L.center.w / 2 : this.L.W / 2, this.L.wide ? 56 : 20 + h / 2, [g, t]).setDepth(DEPTH.toast);
     c.setAlpha(0).setScale(0.8);
     this.tweens.add({ targets: c, alpha: 1, scale: 1, duration: 180, ease: 'Back.easeOut' });
     this.tweens.add({ targets: c, alpha: 0, delay: 2200, duration: 220, onComplete: () => c.destroy() });
@@ -1296,7 +1476,7 @@ export class FirmScene extends Phaser.Scene {
     const g = this.guideNow;
     if (!g) return;
     const { o } = g;
-    const { W, H: Hh, wide } = this.L;
+    const { W, H: Hh, wide, view: V } = this.L;
     const layer = this.add.container(0, 0).setDepth(DEPTH.guide);
     this.guideLayer = layer;
     const r = this.targetRect(o.target);
@@ -1308,13 +1488,14 @@ export class FirmScene extends Phaser.Scene {
     };
     if (r) {
       const hx = r.x - pad, hy = r.y - pad, hw = r.w + 2 * pad, hh = r.h + 2 * pad;
-      block(0, 0, W, hy); block(0, hy + hh, W, Hh - hy - hh); block(0, hy, hx, hh); block(hx + hw, hy, W - hx - hw, hh);
+      const vr = V.x + V.w, vb = V.y + V.h;
+      block(V.x, V.y, V.w, hy - V.y); block(V.x, hy + hh, V.w, vb - hy - hh); block(V.x, hy, hx - V.x, hh); block(hx + hw, hy, vr - hx - hw, hh);
       const ring = this.add.graphics();
       strokeRect(ring, hx, hy, hw, hh, 12, C.gold, 2);
       layer.add(ring);
       this.tweens.add({ targets: ring, alpha: 0.35, duration: 600, yoyo: true, repeat: -1 });
       if (!o.wait) block(hx, hy, hw, hh); // explanation steps: nothing behind is clickable
-    } else block(0, 0, W, Hh);
+    } else block(V.x, V.y, V.w, V.h);
     // Marv
     const bw = Math.min(wide ? 620 : W - 24, W - 24);
     const faceW = wide ? 78 : 60, faceH = wide ? 100 : 80;
@@ -1462,7 +1643,13 @@ export class FirmScene extends Phaser.Scene {
       get state() { return self.ui.s; },
       get ui() { return self.ui; },
       view: () => ({ phase: self.ui.s.phase, busy: self.busy, shop: !!self.shop, placing: self.ui.selected !== null, overlay: self.overlayKind, guide: !!self.guideNow, wait: self.guideNow?.o.wait ?? null, hint: self.guideNow?.o.hint ?? null }),
-      rect: (name: string) => self.hits[name] ?? self.hits[`ov:${name}`] ?? null,
+      rect: (name: string) => {
+        const r = self.hits[name] ?? self.hits[`ov:${name}`];
+        if (!r) return null;
+        const { view: V, fit } = self.L;
+        return { x: (r.x - V.x) * fit, y: (r.y - V.y) * fit, w: r.w * fit, h: r.h * fit };
+      },
+      layout: () => ({ W: self.L.W, H: self.L.H, k: self.L.k, fit: self.L.fit, wide: self.L.wide }),
       firstEmpty: () => self.ui.s.grid.findIndex((c) => c === null),
       load: (seed: number) => { self.guideStop(); const u0 = freshUi('random'); u0.s = newRun(seed); u0.firm = firmName(seed); self.ui = u0; self.shownCash = u0.s.cash; self.closeOverlay(); self.build(); },
       set: (patch: Partial<GameState>) => { self.ui.s = { ...self.ui.s, ...patch }; self.shownCash = self.ui.s.cash; self.build(); },

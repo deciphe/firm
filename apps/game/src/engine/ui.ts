@@ -1,9 +1,13 @@
 import { C, FONT } from './theme.ts';
 
-/** Every layout number is in CSS pixels; `u()` turns it into device pixels. */
-export let DPR = 1;
-export function setDpr(d: number): void { DPR = d; }
-export const u = (v: number): number => Math.round(v * DPR * 100) / 100;
+/**
+ * Layout is in fixed design pixels (1600x900 table, or 430x932 on phones); the camera zooms the whole
+ * design to fit the window. `u()` is kept as the unit function (identity) so geometry reads clearly.
+ * Text is rasterised at the camera's zoom so it stays sharp.
+ */
+export let TEXT_RES = 1;
+export function setTextRes(r: number): void { TEXT_RES = Math.max(1, Math.min(4, r)); }
+export const u = (v: number): number => v;
 
 export interface TextOpts { size: number; weight?: number; color?: string; spacing?: number; align?: 'left' | 'center' | 'right'; wrap?: number; lineSpacing?: number }
 
@@ -14,6 +18,7 @@ export function text(scene: Phaser.Scene, x: number, y: number, str: string, o: 
     fontStyle: String(o.weight ?? 700),
     color: o.color ?? '#eeeae2',
     align: o.align ?? 'left',
+    resolution: TEXT_RES,
     ...(o.wrap ? { wordWrap: { width: u(o.wrap), useAdvancedWrap: true } } : {}),
     ...(o.lineSpacing ? { lineSpacing: u(o.lineSpacing) } : {}),
   });

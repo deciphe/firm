@@ -2,12 +2,12 @@ import { cardDef, displayName } from '@firm/sim';
 import type { CardInstance } from '@firm/sim';
 import { stippleCanvas } from '../stipple.ts';
 import { C, H } from './theme.ts';
-import { Spring, dashedRect, roundRect, strokeRect, text, u } from './ui.ts';
+import { Spring, roundRect, strokeRect, text } from './ui.ts';
 
 const SHORT: Record<string, string> = { 'Chargeback Artist': 'Chargeback', 'Copy-Trade Detector': 'Detector', 'Payout Proof Wall': 'Proof Wall', 'Compliance Officer': 'Compliance', 'Support Agent': 'Support', 'Bulk Customer': 'Bulk Buyer' };
 export const shortName = (n: string): string => SHORT[n] ?? n;
 
-const SAMPLE_FEE: Record<string, number> = { gambler: 30, grinder: 12, retail: 26, scalper: 8, trendbro: 38, copyring: 18, hedger: 25, ghost: 28, chargeback: 40, whale: 110, influencer: 0, bot: 12, vet: 0, botfarm: 0 };
+export const SAMPLE_FEE: Record<string, number> = { gambler: 30, grinder: 12, retail: 26, scalper: 8, trendbro: 38, copyring: 18, hedger: 25, ghost: 28, chargeback: 40, whale: 110, influencer: 0, bot: 12, vet: 0, botfarm: 0 };
 
 export function artId(card: CardInstance): string {
   const def = cardDef(card.def);
@@ -18,19 +18,26 @@ export function artId(card: CardInstance): string {
 /** Card art as a Phaser texture, generated once per id. */
 export function artTexture(scene: Phaser.Scene, id: string): string {
   const key = `art:${id}`;
-  if (!scene.textures.exists(key)) scene.textures.addCanvas(key, stippleCanvas(id, '#080809', 3));
+  if (!scene.textures.exists(key)) scene.textures.addCanvas(key, stippleCanvas(id, '#080809', 4));
   return key;
+}
+
+/** A small rounded label ("pill") added to a container; returns its width. */
+export function pill(scene: Phaser.Scene, parent: Phaser.GameObjects.Container, x: number, y: number, str: string, fill: number, ink: string, size: number, anchor: 'left' | 'right' | 'center' = 'left', h?: number): number {
+  const t = text(scene, 0, 0, str, { size, weight: 800, color: ink, spacing: size < 10 ? 1 : 0 }).setOrigin(0.5);
+  const w = t.width + size * 1.1, hh = h ?? size * 1.9;
+  const x0 = anchor === 'left' ? x : anchor === 'right' ? x - w : x - w / 2;
+  const g = scene.add.graphics();
+  roundRect(g, x0, y, w, hh, hh / 2, fill);
+  t.setPosition(x0 + w / 2, y + hh / 2 + 0.5);
+  parent.add([g, t]);
+  return w;
 }
 
 export class CardView extends Phaser.GameObjects.Container {
   private shadow: Phaser.GameObjects.Graphics;
   private face: Phaser.GameObjects.Graphics;
-  private art: Phaser.GameObjects.Image | null = null;
-  private fee: Phaser.GameObjects.Text;
-  private nameT: Phaser.GameObjects.Text;
-  private dots: Phaser.GameObjects.Graphics;
-  private stamp: Phaser.GameObjects.Text;
-  private badge: Phaser.GameObjects.Container;
+  private deco: Phaser.GameObjects.Container;
   private glow: Phaser.GameObjects.Graphics;
   readonly sc = new Spring(1, 1, 300, 16);
   readonly rot = new Spring(0, 0, 220, 14);
@@ -50,40 +57,35 @@ export class CardView extends Phaser.GameObjects.Container {
     this.glow = scene.add.graphics();
     this.shadow = scene.add.graphics();
     this.face = scene.add.graphics();
-    this.dots = scene.add.graphics();
-    const big = cw > 100;
-    this.fee = text(scene, -cw / 2 + (big ? 10 : 6), -ch / 2 + (big ? 9 : 6), '', { size: big ? 15 : 11, weight: 800, color: H.ink });
-    this.nameT = text(scene, 0, ch / 2 - (big ? 28 : 19), '', { size: big ? 13 : 9.5, weight: 800, color: H.ink, align: 'center' }).setOrigin(0.5, 0.5);
-    this.stamp = text(scene, 0, -ch * 0.04, 'FRAUD', { size: big ? 13 : 9, weight: 800, color: H.clay, spacing: 1.6 }).setOrigin(0.5).setAngle(-14).setVisible(false);
-    this.badge = scene.add.container(u(cw / 2 - 4), u(-ch / 2 + 2)).setVisible(false);
-    this.add([this.glow, this.shadow, this.face, this.dots, this.fee, this.nameT, this.stamp, this.badge]);
-    this.setSize(u(cw), u(ch));
+    this.deco = scene.add.container(0, 0);
+    this.add([this.glow, this.shadow, this.face, this.deco]);
+    this.setSize(cw, ch);
     this.setInteractive({ useHandCursor: true });
-    this.on('pointerover', () => { this.hovered = true; this.sc.target = 1.07; this.lift.target = -8; });
+    this.on('pointerover', () => { this.hovered = true; if (this.card) { this.sc.target = 1.07; this.lift.target = -8; } });
     this.on('pointerout', () => { this.hovered = false; this.sc.target = 1; this.lift.target = 0; this.rot.target = 0; });
     this.on('pointermove', (p: Phaser.Input.Pointer) => {
-      if (!this.hovered) return;
-      const lx = (p.x - this.x) / u(this.cw);
-      this.rot.target = lx * 0.12;
+      if (!this.hovered || !this.card) return;
+      this.rot.target = ((p.worldX - this.x) / this.cw) * 0.14;
     });
     scene.events.on('update', this.tick, this);
     this.once('destroy', () => scene.events.off('update', this.tick, this));
     scene.add.existing(this);
   }
 
-  place(x: number, y: number): this { this.homeX = u(x); this.homeY = u(y); this.x = this.homeX; this.y = this.homeY; return this; }
+  place(x: number, y: number): this { this.homeX = x; this.homeY = y; this.x = x; this.y = y; return this; }
 
   setCard(card: CardInstance | null): this {
     this.card = card;
     const { cw, ch } = this;
     const big = cw > 100;
-    this.face.clear(); this.shadow.clear(); this.dots.clear(); this.glow.clear();
-    this.art?.destroy(); this.art = null;
-    this.badge.removeAll(true).setVisible(false);
+    const r = Math.max(8, cw * 0.1);
+    this.face.clear(); this.shadow.clear(); this.glow.clear();
+    this.deco.removeAll(true);
     if (!card) {
-      dashedRect(this.face, -cw / 2, -ch / 2, cw, ch, big ? 12 : 9, C.muted, 0.22);
-      this.fee.setText(''); this.nameT.setText(''); this.stamp.setVisible(false);
-      this.disableInteractive().setInteractive({ useHandCursor: true });
+      roundRect(this.face, -cw / 2, -ch / 2, cw, ch, r, C.paper, 0.025);
+      strokeRect(this.face, -cw / 2, -ch / 2, cw, ch, r, C.paper, 1, 0.07);
+      this.deco.add(text(this.scene, 0, 0, '+', { size: big ? 22 : 16, weight: 600, color: H.muted }).setOrigin(0.5).setAlpha(0.22));
+      this.due = false;
       return this;
     }
     const def = cardDef(card.def);
@@ -93,58 +95,58 @@ export class CardView extends Phaser.GameObjects.Container {
     const exposed = card.revealed && !!def.fraud;
     const t = def.threshold ?? 0;
     this.due = !!t && card.progress >= t;
-    const r = big ? 12 : 9;
-    // shadow + body
-    roundRect(this.shadow, -cw / 2 + 1, -ch / 2 + (big ? 7 : 5), cw, ch, r, 0x000000, 0.5);
-    roundRect(this.face, -cw / 2, -ch / 2, cw, ch, r, staff ? 0xe9e7e4 : C.paper);
-    roundRect(this.face, -cw / 2, ch / 2 - ch * 0.22, cw, ch * 0.22, r, staff ? 0xdfdcd7 : C.paper2, 0.7);
-    strokeRect(this.face, -cw / 2 + 3, -ch / 2 + 3, cw - 6, ch - 6, r - 2, C.ink, 1, 0.12);
-    if (staff) strokeRect(this.face, -cw / 2 + 0.75, -ch / 2 + 0.75, cw - 1.5, ch - 1.5, r, C.plat, 1.5, 1);
-    if (rare) strokeRect(this.face, -cw / 2 + 1, -ch / 2 + 1, cw - 2, ch - 2, r, C.gold, 2, 1);
-    if (this.due) { this.glow.fillStyle(C.gold, 0.28); this.glow.fillRoundedRect(u(-cw / 2 - 6), u(-ch / 2 - 6), u(cw + 12), u(ch + 12), u(r + 5)); strokeRect(this.face, -cw / 2 - 1, -ch / 2 - 1, cw + 2, ch + 2, r + 1, C.gold, 2.5, 1); }
-    // art
-    const key = artTexture(this.scene, artId(card));
-    const size = Math.min(cw * (big ? 0.72 : 0.78), ch * 0.5);
-    this.art = this.scene.add.image(0, u(-ch * 0.06), key).setDisplaySize(u(size), u(size));
-    if (exposed) this.art.setTint(0xb8452a);
-    this.addAt(this.art, 3);
-    // labels
+    const paper = staff ? 0xe6e6e3 : C.paper;
+    const edge = staff ? 0xbfc2c6 : C.paper3;
+    // shadow, card thickness, face
+    roundRect(this.shadow, -cw / 2 + 2, -ch / 2 + (big ? 9 : 6), cw, ch, r, 0x000000, 0.45);
+    roundRect(this.face, -cw / 2, -ch / 2 + 3, cw, ch, r, edge);
+    roundRect(this.face, -cw / 2, -ch / 2, cw, ch, r, paper);
+    strokeRect(this.face, -cw / 2 + 4, -ch / 2 + 4, cw - 8, ch - 8, r - 3, C.ink, 1, 0.1);
+    if (rare) strokeRect(this.face, -cw / 2 + 1.5, -ch / 2 + 1.5, cw - 3, ch - 3, r - 1, C.gold, 3);
+    else if (staff) strokeRect(this.face, -cw / 2 + 1, -ch / 2 + 1, cw - 2, ch - 2, r - 1, C.plat, 2);
+    if (exposed) strokeRect(this.face, -cw / 2 + 1.5, -ch / 2 + 1.5, cw - 3, ch - 3, r - 1, C.clay, 3);
+    if (this.due) {
+      this.glow.fillStyle(C.gold, 0.32);
+      this.glow.fillRoundedRect(-cw / 2 - 7, -ch / 2 - 7, cw + 14, ch + 14, r + 6);
+      strokeRect(this.face, -cw / 2 - 1, -ch / 2 - 1, cw + 2, ch + 2, r + 1, C.gold, 3);
+    }
+    // art, big and central
+    const size = Math.min(cw * 0.78, ch * 0.5);
+    const art = this.scene.add.image(0, -ch * 0.05, artTexture(this.scene, artId(card))).setDisplaySize(size, size);
+    if (exposed) art.setTint(0xb8452a);
+    this.deco.add(art);
+    // top-left chip: daily fee, or the card's role
+    const pad = big ? 8 : 5, ps = big ? 12 : 9;
     const base = (hidden ? SAMPLE_FEE.retail : SAMPLE_FEE[card.def]) ?? 0;
-    this.fee.setText(staff ? 'STAFF' : `$${base + card.bonus}`).setFontSize(staff ? u(big ? 10 : 8) : u(big ? 15 : 11)).setLetterSpacing(staff ? u(1.2) : 0).setColor(staff ? H.blue : H.ink);
-    this.nameT.setText(shortName(displayName(card)));
-    this.fitName();
-    this.stamp.setVisible(exposed);
-    // payout progress dots
+    if (exposed) pill(this.scene, this.deco, -cw / 2 + pad, -ch / 2 + pad, 'FRAUD', C.clay, H.clayInk, ps * 0.85);
+    else if (staff) pill(this.scene, this.deco, -cw / 2 + pad, -ch / 2 + pad, 'STAFF', C.plat, H.ink, ps * 0.85);
+    else if (base > 0 || card.bonus) pill(this.scene, this.deco, -cw / 2 + pad, -ch / 2 + pad, `$${base + card.bonus}`, C.chip, H.chipInk, ps);
+    if (card.bonus) pill(this.scene, this.deco, cw / 2 - pad, -ch / 2 + pad, `+${card.bonus}`, C.gold, H.ink, ps * 0.85, 'right');
+    // name
+    const name = text(this.scene, 0, ch / 2 - (t ? (big ? 26 : 18) : (big ? 18 : 13)), shortName(displayName(card)), { size: big ? 13.5 : 9.5, weight: 800, color: H.ink, align: 'center' }).setOrigin(0.5);
+    const max = cw - 10;
+    let s = name.text;
+    while (name.width > max && s.length > 3) { s = s.slice(0, -1); name.setText(`${s.trimEnd()}…`); }
+    this.deco.add(name);
+    // payout meter
     if (t) {
-      const n = 10, dr = big ? 2.6 : 1.7, gap = big ? 8.4 : (cw - 12) / n;
-      const x0 = -((n - 1) * gap) / 2, y = ch / 2 - (big ? 11 : 8);
-      for (let k = 0; k < n; k++) {
-        const on = k < Math.round((card.progress / t) * 10);
-        if (on) { this.dots.fillStyle(this.due ? C.goldDeep : C.ink, 1); this.dots.fillCircle(u(x0 + k * gap), u(y), u(dr)); }
-        else { this.dots.lineStyle(u(0.9), C.ink, 0.35); this.dots.strokeCircle(u(x0 + k * gap), u(y), u(dr)); }
-      }
-    }
-    if (card.bonus) {
+      const mx = -cw / 2 + (big ? 10 : 6), mw = cw - (big ? 20 : 12), my = ch / 2 - (big ? 12 : 8), mh = big ? 5 : 4;
       const g = this.scene.add.graphics();
-      roundRect(g, -30, -2, 30, 18, 6, C.gold);
-      const bt = text(this.scene, -15, 7, `+${card.bonus}`, { size: 10, weight: 800, color: H.ink }).setOrigin(0.5);
-      this.badge.add([g, bt]).setVisible(true);
+      roundRect(g, mx, my, mw, mh, mh / 2, C.ink, 0.12);
+      const f = Math.min(1, card.progress / t);
+      if (f > 0) roundRect(g, mx, my, Math.max(mh, mw * f), mh, mh / 2, this.due ? C.goldDeep : f >= 0.7 ? C.clay : C.ink, 1);
+      this.deco.add(g);
     }
+    if (this.due) pill(this.scene, this.deco, 0, -ch / 2 - (big ? 11 : 8), 'PAYOUT', C.gold, H.ink, big ? 10 : 8, 'center');
     return this;
-  }
-
-  private fitName(): void {
-    const max = u(this.cw - 8);
-    let s = this.nameT.text;
-    while (this.nameT.width > max && s.length > 3) { s = s.slice(0, -1); this.nameT.setText(`${s.trimEnd()}…`); }
   }
 
   /** The Balatro jolt: jump, twist, settle. */
   pop(strength = 1): void {
-    this.sc.x = 1.16 * strength + (1 - strength);
+    this.sc.x = 1 + 0.18 * strength;
     this.sc.kick(-1.5);
-    this.rot.kick((Math.random() < 0.5 ? -1 : 1) * 3.2 * strength);
-    this.lift.kick(-160 * strength);
+    this.rot.kick((Math.random() < 0.5 ? -1 : 1) * 3.4 * strength);
+    this.lift.kick(-170 * strength);
   }
 
   drop(): void { this.sc.x = 1.35; this.lift.x = -40; this.rot.x = (Math.random() - 0.5) * 0.4; }
@@ -152,14 +154,15 @@ export class CardView extends Phaser.GameObjects.Container {
   private tick(_time: number, dtMs: number): void {
     const dt = Math.min(0.05, dtMs / 1000);
     this.t += dt;
-    const sway = this.card && this.sway ? Math.sin(this.t * 1.25 + this.phase) * 0.012 : 0;
-    const bob = this.card && this.sway ? Math.sin(this.t * 1.6 + this.phase) * u(1.6) : 0;
+    const live = !!this.card && this.sway;
+    const sway = live ? Math.sin(this.t * 1.25 + this.phase) * 0.012 : 0;
+    const bob = live ? Math.sin(this.t * 1.6 + this.phase) * 1.6 : 0;
     this.setScale(this.sc.step(dt));
     this.rotation = this.rot.step(dt) + sway;
-    this.y = this.homeY + u(this.lift.step(dt)) + bob;
+    this.y = this.homeY + this.lift.step(dt) + bob;
     this.x = this.homeX;
-    if (this.due) this.glow.setAlpha(0.6 + 0.4 * Math.sin(this.t * 4));
-    this.setAlpha(this.dim ? 0.5 : 1);
-    this.shadow.setPosition(u(-this.lift.x * 0.12), u(-this.lift.x * 0.25));
+    if (this.due) this.glow.setAlpha(0.55 + 0.45 * Math.sin(this.t * 4));
+    this.setAlpha(this.dim ? 0.45 : 1);
+    this.shadow.setPosition(-this.lift.x * 0.12, -this.lift.x * 0.25);
   }
 }

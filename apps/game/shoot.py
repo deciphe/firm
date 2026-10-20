@@ -106,7 +106,7 @@ def run(p, w, h):
     click('cta'); settle()
     until(lambda: view()['overlay'] == 'payout', 10)
     pg.evaluate('__firm.guideStop()')
-    pg.wait_for_timeout(900)
+    pg.wait_for_timeout(1800)
     shot('08-payout')
     pg.evaluate('''() => { __firm.set({phase:'dead', cause:'payroll', shortBy:212, day:34, stats: {...__firm.state.stats, peakValuation: 14220, payoutsPaid: 17, payoutsDenied: 2, fraudCaught: 1}}); __firm.showDeath(); }''')
     pg.wait_for_timeout(900)
