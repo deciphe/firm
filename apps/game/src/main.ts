@@ -1,6 +1,7 @@
 import * as J from './juice.ts';
 import { CrtPipeline } from './engine/shaders.ts';
 import { FirmScene } from './engine/scene.ts';
+import { RolodexScene, SetupScene, TitleScene } from './engine/menus.ts';
 import type { UiState } from './engine/scene.ts';
 
 interface Hot { snapshot?: (fn: () => unknown) => void; ready?: (fn: (data: { ui?: UiState }) => void) => void; data?: { ui?: UiState } }
@@ -35,14 +36,35 @@ async function boot(data: { ui?: UiState }): Promise<void> {
     banner: false,
     scene: [],
   });
-  game.scene.add('firm', FirmScene, true, data);
+  game.scene.add('firm', FirmScene, false);
+  game.scene.add('title', TitleScene, false);
+  game.scene.add('setup', SetupScene, false);
+  game.scene.add('rolodex', RolodexScene, false);
+  // First visit goes straight into the guided tutorial; after that, the title screen.
+  if (data.ui?.s || !readStore<boolean>('tutorialDone')) game.scene.start('firm', data);
+  else game.scene.start('title');
   document.getElementById('boot')?.remove();
   window.addEventListener('resize', () => {
     const s = size();
     game.scale.resize(s.w * dpr, s.h * dpr);
   });
   const scene = (): FirmScene => game.scene.getScene('firm') as FirmScene;
-  (window as unknown as { __firm: unknown }).__firm = new Proxy({}, { get: (_t, k) => (scene()?.debug() as Record<string | symbol, unknown>)[k] });
+  const active = (): { debug: () => Record<string | symbol, unknown> } | null => {
+    for (const key of ['firm', 'title', 'setup', 'rolodex']) {
+      if (game.scene.isActive(key)) return game.scene.getScene(key) as unknown as { debug: () => Record<string | symbol, unknown> };
+    }
+    return null;
+  };
+  const go = (key: string, d: object = {}): void => { for (const k of ['firm', 'title', 'setup', 'rolodex']) if (game.scene.isActive(k)) game.scene.stop(k); game.scene.start(key, d); };
+  (window as unknown as { __firm: unknown }).__firm = new Proxy({}, {
+    get: (_t, k) => {
+      if (k === 'go') return go;
+      if (k === 'screen') return active() ? (active() as unknown as Phaser.Scene).scene.key : null;
+      const sc = active();
+      const dbg = sc?.debug() ?? {};
+      return dbg[k] ?? (scene()?.debug() as Record<string | symbol, unknown>)[k];
+    },
+  });
   const hot = (window as unknown as { claude?: { hot?: Hot } }).claude?.hot;
   hot?.snapshot?.(() => ({ ui: scene()?.ui }));
   window.addEventListener('pointerdown', () => J.unlockAudio(), { once: true });

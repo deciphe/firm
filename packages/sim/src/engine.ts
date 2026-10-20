@@ -1,6 +1,8 @@
 import { CARDS, EXCUSES, STARTING_EXCUSES, STARTING_GRID, cardDef, excuseDef } from './cards.ts';
 import type { AuraCtx, NeighborSlot, TraderOutcome } from './cards.ts';
 import { makeRng } from './rng.ts';
+import { CRISES, CRISIS_EVERY, FOUNDERS, PLANS } from './run.ts';
+import type { RunOptions } from './run.ts';
 import type { Rng } from './rng.ts';
 import type {
   Action, Candle, CardInstance, CardResult, FeedPost, GameState, Offer, Tone,
@@ -76,16 +78,42 @@ export function emptySlots(s: GameState): number[] {
 
 const clamp = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, v));
 
+// ------------------------------------------------------------------ run rules (founder, stake, crisis, plan)
+
+const crisisIs = (s: GameState, id: string): boolean => s.crisis === id;
+
+/** Every Heat gain goes through here (the Audit crisis doubles it). */
+function addHeat(s: GameState, amount: number): void {
+  const mul = amount > 0 && crisisIs(s, 'audit') ? 2 : 1;
+  s.heat = clamp(s.heat + amount * mul, 0, BALANCE.maxHeat);
+}
+/** Every Trust loss goes through here (the Exposé doubles it). */
+function loseTrust(s: GameState, amount: number): void {
+  s.trust = clamp(s.trust - amount * (crisisIs(s, 'expose') ? 2 : 1), 0, BALANCE.maxTrust);
+}
+function heatDecay(s: GameState): number {
+  return s.stake >= 3 ? BALANCE.heatDecay / 2 : BALANCE.heatDecay;
+}
+export function payrollGrowth(s: GameState): number {
+  return BALANCE.payrollGrowth + (s.stake >= 4 ? 0.1 : 0) + s.dilution;
+}
+function planPayrollMul(plan: string): number {
+  return plan === 'growth' ? 1.2 : plan === 'lean' ? 0.85 : plan === 'fair' ? 1.1 : 1;
+}
+const round10 = (v: number): number => Math.round(v / 10) * 10;
+
 function post(s: GameState, handle: string, text: string, tone: Tone): void {
   const p: FeedPost = { day: s.day, handle, text, tone };
   s.feed.unshift(p);
   if (s.feed.length > 40) s.feed.length = 40;
 }
 
-function rollForecast(rng: Rng): Record<Candle, number> {
+function rollForecast(rng: Rng, s?: GameState): Record<Candle, number> {
   const f = { ...BALANCE.baseForecast };
   const bumped = rng.pick(CANDLES);
   f[bumped] += BALANCE.forecastBump;
+  if (s?.founder === 'quant') f.chop += 0.1;
+  if (s && crisisIs(s, 'volatility')) f.chop /= 2;
   const total = CANDLES.reduce((t, c) => t + f[c], 0);
   for (const c of CANDLES) f[c] = Math.round((f[c] / total) * 1000) / 1000;
   return f;
@@ -119,11 +147,20 @@ export function trustMultiplier(trust: number): number {
 }
 
 /** Price of an offer. Hidden fraud is priced like the ordinary customer it pretends to be. */
-export function offerPrice(o: Offer): number {
-  if (o.kind === 'excuse') return BALANCE.prices.excuse ?? 45;
-  const def = cardDef(o.id);
-  const rarity = def.disguise ? 'common' : def.rarity;
-  return BALANCE.prices[rarity] ?? 40;
+export function offerPrice(o: Offer, s?: GameState): number {
+  let base: number;
+  if (o.kind === 'excuse') base = BALANCE.prices.excuse ?? 45;
+  else {
+    const def = cardDef(o.id);
+    base = BALANCE.prices[def.disguise ? 'common' : def.rarity] ?? 40;
+  }
+  if (!s) return base;
+  if (s.freeHires > 0) return 0;
+  let mul = 1;
+  if (crisisIs(s, 'outage')) mul *= 1.5;
+  if (s.plan === 'fair') mul *= 0.6;
+  if (s.founder === 'closer') mul *= 0.9;
+  return Math.round((base * mul) / 5) * 5;
 }
 
 /** Rerolls get pricier each time today (resets every shop). */
@@ -133,32 +170,46 @@ export function rerollPrice(s: GameState): number {
 
 // ------------------------------------------------------------------ new run
 
-export function newRun(seed: number): GameState {
+export function newRun(seed: number, opts: RunOptions = {}): GameState {
   const rng = makeRng(seed);
+  const founder = FOUNDERS[opts.founder ?? 'founder'] ?? (FOUNDERS.founder as NonNullable<typeof FOUNDERS.founder>);
+  const stake = clamp(Math.round(opts.stake ?? 1), 1, 5);
+  const payrollStart = round10(BALANCE.payrollStart * (stake >= 2 ? 1.15 : 1));
   const s: GameState = {
     seed,
     rng: 0,
     day: 1,
     phase: 'morning',
-    cash: BALANCE.startCash,
-    trust: BALANCE.startTrust,
-    heat: 0,
-    payroll: { amount: BALANCE.payrollStart, dueDay: BALANCE.cycleDays, cycle: 1, loanOwed: 0, loanDueCycle: 0 },
+    cash: Math.round((BALANCE.startCash + founder.cash) * (stake >= 5 ? 0.5 : 1)),
+    trust: clamp(BALANCE.startTrust + founder.trust, 0, BALANCE.maxTrust),
+    heat: founder.heat,
+    payroll: { amount: payrollStart, base: payrollStart, dueDay: BALANCE.cycleDays, cycle: 1, loanOwed: 0, loanDueCycle: 0 },
     grid: new Array<CardInstance | null>(SIZE).fill(null),
     nextUid: 1,
-    excuses: [...STARTING_EXCUSES],
+    excuses: [...(founder.excuses ?? STARTING_EXCUSES)],
     queue: [],
     offers: [],
     rerolls: BALANCE.rerollsPerCycle,
     flashSaleCycle: 0,
-    forecast: rollForecast(rng),
+    forecast: BALANCE.baseForecast,
     lastReport: null,
     feed: [],
-    stats: { paid: 0, denied: 0, payoutsPaid: 0, payoutsDenied: 0, stalls: 0, fraudCaught: 0, peakValuation: 0, incomeHistory: [], excuseUses: {} },
+    stats: { paid: 0, denied: 0, payoutsPaid: 0, payoutsDenied: 0, stalls: 0, fraudCaught: 0, peakValuation: 0, incomeHistory: [], excuseUses: {}, crisesSurvived: 0 },
     cause: null,
     shortBy: 0,
+    founder: founder.id,
+    stake,
+    crisis: null,
+    nextCrisis: rng.pick(Object.keys(CRISES)),
+    crisisCycle: CRISIS_EVERY,
+    plan: 'steady',
+    plans: [],
+    freeHires: 0,
+    dilution: 0,
   };
+  s.forecast = rollForecast(rng, s);
   STARTING_GRID.forEach((id, i) => { if (id) s.grid[i] = newCard(s, id); });
+  for (const [i, id] of founder.place) s.grid[i] = newCard(s, id);
   s.rng = rng.state();
   s.stats.peakValuation = valuation(s);
   post(s, '@propdrama_wire', 'New firm just opened its doors. Six customers. Bold.', 'neutral');
@@ -170,6 +221,9 @@ export function newRun(seed: number): GameState {
 export function legalActions(s: GameState): Action[] {
   const out: Action[] = [];
   switch (s.phase) {
+    case 'quarter':
+      for (const id of s.plans) if (id !== 'pr' || s.cash >= planCost(s, id)) out.push({ type: 'plan', id });
+      break;
     case 'morning':
       out.push({ type: 'tap' });
       if (s.flashSaleCycle !== s.payroll.cycle) out.push({ type: 'flashSale' });
@@ -187,7 +241,7 @@ export function legalActions(s: GameState): Action[] {
     }
     case 'draft':
       out.push({ type: 'draft', pick: null });
-      s.offers.forEach((o, i) => { if (s.cash >= offerPrice(o)) out.push({ type: 'draft', pick: i }); });
+      s.offers.forEach((o, i) => { if (s.cash >= offerPrice(o, s)) out.push({ type: 'draft', pick: i }); });
       if (s.cash >= rerollPrice(s)) out.push({ type: 'reroll' });
       break;
     case 'dead':
@@ -223,6 +277,10 @@ export function step(prev: GameState, action: Action): GameState {
     case 'draft':
       need(s.phase === 'draft', 'not drafting');
       draft(s, rng, action.pick, action.slot);
+      break;
+    case 'plan':
+      need(s.phase === 'quarter' && s.plans.includes(action.id), 'no such plan');
+      choosePlan(s, action.id);
       break;
     case 'reroll':
       need(s.phase === 'draft' && s.cash >= rerollPrice(s), 'cannot afford a reroll');
@@ -273,7 +331,7 @@ function resolveDay(s: GameState, rng: Rng): void {
 
   // Global fee multiplier: customers spend more with a firm they trust; Proof Walls reward honoured payouts.
   const proofWalls = countOnGrid('proofwall');
-  const feeMul = trustMultiplier(s.trust) * (1 + 0.04 * s.stats.payoutsPaid * proofWalls);
+  const feeMul = trustMultiplier(s.trust) * (1 + 0.04 * s.stats.payoutsPaid * proofWalls) * (crisisIs(s, 'pricewar') ? 0.75 : 1);
   s.grid.forEach((c, i) => {
     const o = outcomes[i];
     if (c && o && o.cash > 0) o.cash = Math.round((o.cash + c.bonus) * feeMul);
@@ -290,6 +348,7 @@ function resolveDay(s: GameState, rng: Rng): void {
     const def = cardDef(c.def);
     income += o.cash;
     heat += o.heat ?? 0;
+    if (crisisIs(s, 'bankrun') && candle !== 'chop' && o.progress > 0) o.progress += 1;
     c.progress = o.reset ? 0 : Math.max(0, c.progress + o.progress);
     if (def.threshold) {
       c.progress = Math.min(c.progress, def.threshold);
@@ -307,7 +366,8 @@ function resolveDay(s: GameState, rng: Rng): void {
 
   const supportCount = countOnGrid('support');
   s.cash += income;
-  s.heat = clamp(s.heat + heat - BALANCE.heatDecay - supportCount, 0, BALANCE.maxHeat);
+  addHeat(s, heat);
+  s.heat = clamp(s.heat - heatDecay(s) - supportCount, 0, BALANCE.maxHeat);
   s.stats.incomeHistory.push(income);
 
   for (const uid of requests) {
@@ -366,8 +426,8 @@ function decidePayout(s: GameState, rng: Rng, decision: 'pay' | 'stall' | 'deny'
     card.stalls += 1;
     card.stalledUntil = s.day + 3;
     s.stats.stalls += 1;
-    s.trust = clamp(s.trust - 0.05 * card.stalls, 0, BALANCE.maxTrust);
-    s.heat = clamp(s.heat + 2, 0, BALANCE.maxHeat);
+    loseTrust(s, 0.05 * card.stalls);
+    addHeat(s, 2);
     if (card.stalls === 2) post(s, '@chartcrime', 'Day 6 of "your payout is processing." Starting to wonder.', 'bad');
   } else if (excuse === undefined) {
     // Ghost them: no excuse, no reply. The worst look a firm can have.
@@ -375,8 +435,8 @@ function decidePayout(s: GameState, rng: Rng, decision: 'pay' | 'stall' | 'deny'
     s.grid[index] = null;
     s.stats.denied += req.amount;
     s.stats.payoutsDenied += 1;
-    s.trust = clamp(s.trust - (def.fraud && card.revealed ? 0.1 : 0.7), 0, BALANCE.maxTrust);
-    s.heat = clamp(s.heat + 14 * heatMul, 0, BALANCE.maxHeat);
+    loseTrust(s, (def.fraud && card.revealed ? 0.1 : 0.7) * (s.founder === 'saint' ? 2 : 1));
+    addHeat(s, 14 * heatMul);
     post(s, rng.pick(['@fundedfrank', '@nq_nate', '@chartcrime']), `Payout request ignored. Account closed. No email, nothing.`, 'bad');
   } else {
     need(s.excuses.includes(excuse), 'no such excuse in hand');
@@ -389,7 +449,7 @@ function decidePayout(s: GameState, rng: Rng, decision: 'pay' | 'stall' | 'deny'
 
     if (ex.stallDays) {
       card.stalledUntil = s.day + ex.stallDays;
-      s.heat = clamp(s.heat + 4 * reuse * heatMul, 0, BALANCE.maxHeat);
+      addHeat(s, 4 * reuse * heatMul);
       post(s, '@propdrama_wire', '"Technical review" again. Everyone knows what that means.', 'bad');
     } else if (ex.refund) {
       s.cash -= ex.refund;
@@ -408,16 +468,16 @@ function decidePayout(s: GameState, rng: Rng, decision: 'pay' | 'stall' | 'deny'
         s.heat = clamp(s.heat - 3, 0, BALANCE.maxHeat);
         post(s, '@thetapewatch', `Firm caught a ${def.name.toLowerCase()} and showed receipts. Clean.`, 'good');
       } else if (def.fraud) {
-        s.trust = clamp(s.trust - 0.15 * reuse, 0, BALANCE.maxTrust);
-        s.heat = clamp(s.heat + 4 * heatMul, 0, BALANCE.maxHeat);
+        loseTrust(s, 0.15 * reuse);
+        addHeat(s, 4 * heatMul);
         post(s, '@chartcrime', `Payout denied for "${ex.name}". No proof posted.`, 'bad');
       } else if (card.def === 'influencer') {
-        s.trust = clamp(s.trust - 1.0 * reuse, 0, BALANCE.maxTrust);
-        s.heat = clamp(s.heat + 18 * heatMul, 0, BALANCE.maxHeat);
+        loseTrust(s, 1.0 * reuse);
+        addHeat(s, 18 * heatMul);
         post(s, '@influencer_ty', 'GOING LIVE IN 10. This firm just denied me. Bring popcorn.', 'bad');
       } else {
-        s.trust = clamp(s.trust - 0.6 * reuse, 0, BALANCE.maxTrust);
-        s.heat = clamp(s.heat + 10 * heatMul, 0, BALANCE.maxHeat);
+        loseTrust(s, 0.6 * reuse);
+        addHeat(s, 10 * heatMul);
         post(s, rng.pick(['@fundedfrank', '@nq_nate', '@grind_guy']), `Denied $${req.amount.toLocaleString('en-US')} for "${ex.name}". I followed every rule.`, 'bad');
       }
     }
@@ -456,7 +516,8 @@ export function rollOffers(s: GameState, rng: Rng): Offer[] {
 
   const offers: Offer[] = [];
   let guard = 0;
-  while (offers.length < BALANCE.offers && guard++ < 50) {
+  const count = s.plan === 'lean' ? 2 : BALANCE.offers;
+  while (offers.length < count && guard++ < 50) {
     const o = rng.weighted(entries);
     if (!offers.some((x) => x.kind === o.kind && x.id === o.id)) offers.push(o);
   }
@@ -468,8 +529,10 @@ function draft(s: GameState, rng: Rng, pick: number | null, slot?: number): void
     const offer = s.offers[pick];
     need(offer !== undefined, 'no such offer');
     const o = offer as Offer;
-    need(s.cash >= offerPrice(o), 'cannot afford that hire');
-    s.cash -= offerPrice(o);
+    const price = offerPrice(o, s);
+    need(s.cash >= price, 'cannot afford that hire');
+    s.cash -= price;
+    if (s.freeHires > 0) s.freeHires -= 1;
     if (o.kind === 'excuse') {
       s.excuses.push(o.id);
       if (s.excuses.length > BALANCE.handSize) s.excuses.shift();
@@ -487,7 +550,7 @@ function draft(s: GameState, rng: Rng, pick: number | null, slot?: number): void
         const existing = s.grid[target];
         if (existing) {
           s.cash -= BALANCE.severance;
-          if (existing.def === 'vet') s.trust = clamp(s.trust - 0.2, 0, BALANCE.maxTrust);
+          if (existing.def === 'vet') loseTrust(s, 0.2);
         }
         s.grid[target] = newCard(s, o.id);
       }
@@ -501,14 +564,14 @@ function draft(s: GameState, rng: Rng, pick: number | null, slot?: number): void
 
 function flashSale(s: GameState, rng: Rng): void {
   s.flashSaleCycle = s.payroll.cycle;
-  s.cash += 100 + 100 * s.payroll.cycle;
+  s.cash += Math.round((100 + 100 * s.payroll.cycle) * (s.founder === 'hustler' ? 1.5 : 1));
   const free = emptySlots(s);
   for (let k = 0; k < 3 && free.length > 0; k++) {
     const i = free.splice(rng.int(free.length), 1)[0] as number;
     s.grid[i] = newCard(s, rng.weighted([['hedger', 3], ['ghost', 2], ['chargeback', 2], ['retail', 2]] as const));
   }
-  s.trust = clamp(s.trust - 0.25, 0, BALANCE.maxTrust);
-  s.heat = clamp(s.heat + 6, 0, BALANCE.maxHeat);
+  loseTrust(s, 0.25);
+  addHeat(s, 6);
   post(s, '@propdrama_wire', '90% OFF everything. Somebody needs cash fast.', 'neutral');
 }
 
@@ -531,15 +594,61 @@ function endDay(s: GameState, rng: Rng): void {
     }
     s.cash -= due;
     if (loanDue > 0) s.payroll.loanOwed = 0;
+    if (s.crisis) {
+      s.stats.crisesSurvived += 1;
+      s.trust = clamp(s.trust + 0.3, 0, BALANCE.maxTrust);
+      post(s, '@thetapewatch', `${CRISES[s.crisis]?.name ?? 'Crisis'} over and this firm is still standing. Respect.`, 'good');
+    }
     s.payroll.cycle += 1;
-    s.payroll.amount = Math.round((s.payroll.amount * BALANCE.payrollGrowth) / 10) * 10;
+    s.payroll.base = round10(s.payroll.base * payrollGrowth(s));
+    s.payroll.amount = s.payroll.base;
     s.payroll.dueDay += BALANCE.cycleDays;
     s.rerolls = BALANCE.rerollsPerCycle;
+    s.plan = 'steady';
+    s.freeHires = 0;
+    s.crisis = null;
+    if (s.payroll.cycle === s.crisisCycle) {
+      s.crisis = s.nextCrisis;
+      s.crisisCycle += CRISIS_EVERY;
+      const others = Object.keys(CRISES).filter((id) => id !== s.crisis);
+      s.nextCrisis = rng.pick(others);
+      post(s, '@propdrama_wire', `Crisis: ${CRISES[s.crisis]?.name ?? s.crisis}. Every firm is sweating.`, 'bad');
+    }
+    if (checkDeath(s)) return;
+    s.stats.peakValuation = Math.max(s.stats.peakValuation, valuation(s));
+    s.day += 1;
+    s.forecast = rollForecast(rng, s);
+    const pool = Object.keys(PLANS).filter((id) => id !== 'steady');
+    const a = pool.splice(rng.int(pool.length), 1)[0] as string;
+    const b = pool.splice(rng.int(pool.length), 1)[0] as string;
+    s.plans = ['steady', a, b];
+    s.phase = 'quarter';
+    return;
   }
   if (checkDeath(s)) return;
   s.stats.peakValuation = Math.max(s.stats.peakValuation, valuation(s));
   s.day += 1;
-  s.forecast = rollForecast(rng);
+  s.forecast = rollForecast(rng, s);
+  s.phase = 'morning';
+}
+
+/** What a plan costs up front (only the PR Blitz costs cash). */
+export function planCost(s: GameState, id: string): number {
+  return id === 'pr' ? round10(s.payroll.base * 0.25) : 0;
+}
+
+function choosePlan(s: GameState, id: string): void {
+  need(id !== 'pr' || s.cash >= planCost(s, id), 'cannot afford the PR blitz');
+  s.plan = id;
+  s.payroll.amount = round10(s.payroll.base * planPayrollMul(id));
+  if (id === 'growth') s.freeHires = 1;
+  if (id === 'raise') { s.cash += round10(s.payroll.base * 0.5); s.dilution += 0.08; }
+  if (id === 'pr') {
+    s.cash -= planCost(s, id);
+    s.heat = clamp(s.heat - 20, 0, BALANCE.maxHeat);
+    s.trust = clamp(s.trust + 0.3, 0, BALANCE.maxTrust);
+  }
+  s.plans = [];
   s.phase = 'morning';
 }
 

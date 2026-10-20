@@ -94,6 +94,14 @@ payroll $700, payroll grows x1.55 per cycle. Latest 10,000-game run per bot is i
 Targets: careless play dies at the first payroll (~day 5), always-pay ~10, always-deny ~15, smart ~20
 with best runs past 40. No cheap strategy may match smart play.
 
+## Run structure
+
+Title → Open a Firm (founder + stake) → the table. Every payroll ends in a full-screen cash-out receipt,
+then the quarter briefing: the crisis now or coming (every 3rd cycle) and a choice of 3 quarter plans
+(Steady always on offer). Death card → New Run / Change Firm / Menu. The Rolodex files every card met.
+Founders, stakes, crises and plans live in `packages/sim/src/run.ts`; unlocks and records in
+`apps/game/src/engine/meta.ts`. `apps/game/shoot_screens.py` screenshots every screen.
+
 ## Look and feel
 
 Balatro's table, in the Flat MASSIVE language with Claude's warmth.

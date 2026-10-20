@@ -1,7 +1,7 @@
 export type Candle = 'chop' | 'up' | 'down' | 'news';
 export const CANDLES: readonly Candle[] = ['chop', 'up', 'down', 'news'];
 
-export type Phase = 'morning' | 'payout' | 'draft' | 'dead';
+export type Phase = 'quarter' | 'morning' | 'payout' | 'draft' | 'dead';
 export type DeathCause = 'payroll' | 'trust' | 'heat';
 export type Rarity = 'common' | 'uncommon' | 'rare';
 
@@ -65,10 +65,14 @@ export interface Stats {
   peakValuation: number;
   incomeHistory: number[];
   excuseUses: Record<string, number>;
+  crisesSurvived: number;
 }
 
 export interface Payroll {
+  /** This cycle's bill, after the quarter plan. */
   amount: number;
+  /** The scheduled bill before the plan; grows every cycle. */
+  base: number;
   dueDay: number;
   cycle: number;
   loanOwed: number;
@@ -97,6 +101,19 @@ export interface GameState {
   stats: Stats;
   cause: DeathCause | null;
   shortBy: number;
+  founder: string;
+  stake: number;
+  /** Crisis running this cycle, if any. */
+  crisis: string | null;
+  /** The crisis waiting at `crisisCycle`. */
+  nextCrisis: string;
+  crisisCycle: number;
+  /** The quarter plan for this cycle, and the choices on offer in the 'quarter' phase. */
+  plan: string;
+  plans: string[];
+  freeHires: number;
+  /** Extra payroll growth from raising rounds. */
+  dilution: number;
 }
 
 export type PayoutDecision = 'pay' | 'stall' | 'deny';
@@ -107,4 +124,5 @@ export type Action =
   | { type: 'loan' }
   | { type: 'payout'; decision: PayoutDecision; excuse?: string }
   | { type: 'draft'; pick: number | null; slot?: number }
-  | { type: 'reroll' };
+  | { type: 'reroll' }
+  | { type: 'plan'; id: string };

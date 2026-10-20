@@ -125,7 +125,7 @@ function smartDraft(s: GameState): Action {
   let best: { i: number; value: number; slot?: number } = { i: -1, value: 0 };
   const budget = spendable(s);
   s.offers.forEach((o, i) => {
-    const price = offerPrice(o);
+    const price = offerPrice(o, s);
     if (price > budget || price > s.cash) return;
     const p = bestPlacement(s, o);
     // value is roughly dollars per day; demand payback within ~7 days
@@ -137,7 +137,7 @@ function smartDraft(s: GameState): Action {
 }
 
 function naiveDraft(s: GameState): Action {
-  const i = s.offers.findIndex((o) => s.cash >= offerPrice(o) && (o.kind === 'excuse' || emptySlots(s).length > 0));
+  const i = s.offers.findIndex((o) => s.cash >= offerPrice(o, s) && (o.kind === 'excuse' || emptySlots(s).length > 0));
   return { type: 'draft', pick: i < 0 ? null : i };
 }
 
@@ -154,14 +154,28 @@ function morning(s: GameState, desperate: boolean): Action {
   return { type: 'tap' };
 }
 
+// ------------------------------------------------------------------ quarter plans
+
+function quarter(s: GameState, smart: boolean): Action {
+  const legal = legalActions(s).filter((a): a is Extract<Action, { type: 'plan' }> => a.type === 'plan');
+  const has = (id: string): boolean => legal.some((a) => a.id === id);
+  if (smart) {
+    if (s.heat >= 45 && has('pr')) return { type: 'plan', id: 'pr' };
+    if (has('lean')) return { type: 'plan', id: 'lean' };
+    if (has('fair') && s.cash > s.payroll.base * 0.5) return { type: 'plan', id: 'fair' };
+  }
+  return { type: 'plan', id: 'steady' };
+}
+
 // ------------------------------------------------------------------ bots
 
 export const BOTS: Record<string, Bot> = {
   random: (s, rng) => pick(rng, legalActions(s)),
-  naive: (s) => (s.phase === 'morning' ? { type: 'tap' } : s.phase === 'payout' ? payoutDecision(s, 'pay') : naiveDraft(s)),
-  alwaysPay: (s) => (s.phase === 'morning' ? morning(s, false) : s.phase === 'payout' ? payoutDecision(s, 'pay') : smartDraft(s)),
-  alwaysDeny: (s) => (s.phase === 'morning' ? morning(s, false) : s.phase === 'payout' ? payoutDecision(s, 'deny') : smartDraft(s)),
+  naive: (s) => (s.phase === 'quarter' ? quarter(s, false) : s.phase === 'morning' ? { type: 'tap' } : s.phase === 'payout' ? payoutDecision(s, 'pay') : naiveDraft(s)),
+  alwaysPay: (s) => (s.phase === 'quarter' ? quarter(s, false) : s.phase === 'morning' ? morning(s, false) : s.phase === 'payout' ? payoutDecision(s, 'pay') : smartDraft(s)),
+  alwaysDeny: (s) => (s.phase === 'quarter' ? quarter(s, false) : s.phase === 'morning' ? morning(s, false) : s.phase === 'payout' ? payoutDecision(s, 'deny') : smartDraft(s)),
   greedy: (s, rng) => {
+    if (s.phase === 'quarter') return quarter(s, false);
     if (s.phase === 'morning') {
       const legal = legalActions(s);
       if (legal.some((a) => a.type === 'flashSale')) return { type: 'flashSale' };
@@ -171,7 +185,7 @@ export const BOTS: Record<string, Bot> = {
     void rng;
     return smartDraft(s);
   },
-  smart: (s) => (s.phase === 'morning' ? morning(s, true) : s.phase === 'payout' ? payoutDecision(s, 'smart') : smartDraft(s)),
+  smart: (s) => (s.phase === 'quarter' ? quarter(s, true) : s.phase === 'morning' ? morning(s, true) : s.phase === 'payout' ? payoutDecision(s, 'smart') : smartDraft(s)),
 };
 
 export function botRng(seed: number): Rng {

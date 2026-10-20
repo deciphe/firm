@@ -1,5 +1,5 @@
 import {
-  BALANCE, CARDS, EXCUSES, cardDef, displayName, excuseDef, findCard, legalActions, newRun, offerPrice, rerollPrice, seedFromString, step, trustMultiplier, valuation,
+  BALANCE, CARDS, CRISES, EXCUSES, FOUNDERS, PLANS, STAKES, cardDef, displayName, excuseDef, findCard, legalActions, newRun, offerPrice, payrollGrowth, planCost, rerollPrice, seedFromString, step, trustMultiplier, valuation,
 } from '@firm/sim';
 import type { Action, Candle, CardInstance, GameState, Offer } from '@firm/sim';
 import * as J from '../juice.ts';
@@ -7,12 +7,21 @@ import { CardView, artTexture, shortName } from './card.ts';
 import { BG_FRAG, CrtPipeline } from './shaders.ts';
 import { C, DEPTH, H } from './theme.ts';
 import { Button, STYLE, Spring, dashedRect, roundRect, setTextRes, strokeRect, text, u } from './ui.ts';
+import { PaperCard } from './card.ts';
+import { markSeen, recordRun } from './meta.ts';
+import type { RunRecord } from './meta.ts';
+import { cssRect, fadeIn, goTo } from './stage.ts';
 
 // ================================================================== run state (survives rebuilds and hot reloads)
 
 export type Mode = 'random' | 'daily' | 'tutorial';
 interface Score { base: number; mult: number; today: number }
-export interface UiState { s: GameState; mode: Mode; firm: string; tape: Candle[]; bestIncome: number; selected: number | null; revealed: string[]; score: Score }
+/** Cash movements this payroll cycle, for the cash-out receipt. */
+interface Ledger { start: number; fees: number; payouts: number; hires: number; moves: number }
+export interface UiState {
+  s: GameState; mode: Mode; firm: string; tape: Candle[]; bestIncome: number; selected: number | null; revealed: string[]; score: Score;
+  founder: string; stake: number; ledger: Ledger; record: RunRecord | null; cashout: { ledger: Ledger; paid: number; cycle: number; crisis: string | null } | null;
+}
 const ALL_REVEALS = ['payroll', 'odds', 'trust', 'hand'];
 
 const money = (n: number): string => `${n < 0 ? '-' : ''}$${Math.abs(Math.round(n)).toLocaleString('en-US')}`;
@@ -35,16 +44,21 @@ function todaySeed(): { seed: number; label: string } {
   return { seed: seedFromString(`daily:${label}`), label };
 }
 
-export function freshUi(mode: Mode): UiState {
+export function freshUi(mode: Mode, founder = 'founder', stake = 1): UiState {
   const seed = mode === 'daily' ? todaySeed().seed : mode === 'tutorial' ? 20261020 : (Math.floor(Math.random() * 2 ** 31) >>> 0);
-  let s = newRun(seed);
+  if (mode !== 'random') { founder = 'founder'; stake = 1; }
+  let s = newRun(seed, { founder, stake });
   if (mode === 'tutorial') {
     const grid = s.grid.map((c) => (c ? { ...c } : null));
     const g = grid[7];
     if (g) g.progress = 6;
     s = { ...s, grid, cash: 500 };
   }
-  return { s, mode, firm: mode === 'tutorial' ? 'Your first firm' : firmName(seed), tape: [], bestIncome: 0, selected: null, revealed: mode === 'tutorial' ? [] : [...ALL_REVEALS], score: { base: 0, mult: 1, today: 0 } };
+  return {
+    s, mode, firm: mode === 'tutorial' ? 'Your first firm' : mode === 'daily' ? `Daily Tape ${todaySeed().label}` : firmName(seed), tape: [], bestIncome: 0, selected: null,
+    revealed: mode === 'tutorial' ? [] : [...ALL_REVEALS], score: { base: 0, mult: 1, today: 0 },
+    founder, stake, ledger: { start: s.cash, fees: 0, payouts: 0, hires: 0, moves: 0 }, record: null, cashout: null,
+  };
 }
 
 const CANDLE: Record<Candle, string> = { chop: 'CHOP', up: 'TREND UP', down: 'TREND DOWN', news: 'NEWS' };
@@ -144,9 +158,13 @@ export class FirmScene extends Phaser.Scene {
 
   // ---------------------------------------------------------------- boot + layout
 
-  create(data: { ui?: UiState }): void {
+  create(data: { ui?: UiState; mode?: Mode; founder?: string; stake?: number }): void {
     const restored = !!data.ui?.s;
-    this.ui = data.ui?.s ? data.ui : freshUi(store<boolean>('tutorialDone') ? 'random' : 'tutorial');
+    this.busy = false; this.overlay = null; this.overlayKind = ''; this.guideNow = null; this.allowed = null; this.waiters.clear(); this.guideToken++;
+    this.ui = data.ui?.s ? data.ui : freshUi(data.mode ?? (store<boolean>('tutorialDone') ? 'random' : 'tutorial'), data.founder, data.stake);
+    this.ui.ledger ??= { start: this.ui.s.cash, fees: 0, payouts: 0, hires: 0, moves: 0 };
+    this.ui.founder ??= this.ui.s.founder ?? 'founder';
+    this.ui.stake ??= this.ui.s.stake ?? 1;
     if (restored && this.ui.mode === 'tutorial') { this.ui.mode = 'random'; this.ui.revealed = [...ALL_REVEALS]; }
     this.shownCash = this.ui.s.cash;
     const dot = this.add.graphics();
@@ -156,12 +174,16 @@ export class FirmScene extends Phaser.Scene {
       this.cameras.main.setPostPipeline(CrtPipeline);
       this.crt = this.cameras.main.getPostPipeline(CrtPipeline) as CrtPipeline;
     }
-    this.scale.on('resize', () => this.requestRebuild());
+    const onResize = (): void => this.requestRebuild();
+    this.scale.on('resize', onResize);
+    this.events.once('shutdown', () => { this.scale.off('resize', onResize); this.guideStop(); });
+    fadeIn(this);
     this.input.keyboard?.on('keydown-SPACE', (e: KeyboardEvent) => { e.preventDefault(); this.onSpace(); });
     this.input.keyboard?.on('keydown-ENTER', () => this.onSpace());
     this.build();
     if (this.ui.mode === 'tutorial' && !restored) void this.tutorial();
     else if (this.ui.s.phase === 'payout') this.openPayout();
+    else if (this.ui.s.phase === 'quarter') this.showQuarter();
     else if (this.ui.s.phase === 'dead') this.showDeath();
   }
 
@@ -174,6 +196,8 @@ export class FirmScene extends Phaser.Scene {
       this.build();
       if (this.overlayKind === 'payout') this.openPayout();
       else if (this.overlayKind === 'death') this.showDeath();
+      else if (this.overlayKind === 'cashout') this.showCashout();
+      else if (this.overlayKind === 'quarter') this.showQuarter();
       else if (this.overlayKind) this.closeOverlay();
       if (this.guideNow) this.drawGuide(true);
     };
@@ -377,8 +401,9 @@ export class FirmScene extends Phaser.Scene {
     const by = P.y + P.h - 20 - 46;
     const b1 = new Button(this, x0, by, (w - 10) / 2, 46, 'HOW IT WORKS', { ...STYLE.dark, size: 11 }).setDepth(DEPTH.hud + 2);
     b1.onClick = () => this.showHow();
-    const b2 = new Button(this, x0 + (w + 10) / 2, by, (w - 10) / 2, 46, 'NEW FIRM', { ...STYLE.dark, size: 11 }).setDepth(DEPTH.hud + 2);
-    b2.onClick = () => { if (!this.busy) this.newGame('random'); };
+    const b2 = new Button(this, x0 + (w + 10) / 2, by, (w - 10) / 2, 46, 'MENU', { ...STYLE.dark, size: 11 }).setDepth(DEPTH.hud + 2);
+    b2.onClick = () => { if (!this.busy) goTo(this, 'title'); };
+    this.hits.menu = { x: x0 + (w + 10) / 2, y: by, w: (w - 10) / 2, h: 46 };
     // right panel frame
     const S = this.L.side;
     if (S) {
@@ -453,7 +478,8 @@ export class FirmScene extends Phaser.Scene {
     this.urgent = days <= 1 && short && this.ui.revealed.includes('payroll');
     this.hud.payAmt?.setText(money(due));
     this.hud.payWhen?.setText(days <= 0 ? 'DUE TONIGHT' : `DUE IN ${days} DAY${days === 1 ? '' : 'S'}`).setColor(days <= 1 ? H.clay : H.paper);
-    this.hud.payCycle?.setText(L.wide ? `CYCLE ${s.payroll.cycle}${loanDue ? ' · +LOAN' : ''}` : `DAY ${s.day} · CYCLE ${s.payroll.cycle}`);
+    const crisisName = s.crisis ? (CRISES[s.crisis]?.name ?? '').toUpperCase() : '';
+    this.hud.payCycle?.setText(crisisName ? `CYCLE ${s.payroll.cycle} · ${crisisName}` : L.wide ? `CYCLE ${s.payroll.cycle}${loanDue ? ' · +LOAN' : ''}` : `DAY ${s.day} · CYCLE ${s.payroll.cycle}`).setColor(crisisName ? H.clay : H.muted);
     this.hud.payDay?.setText(`DAY ${s.day}`);
     this.hud.payGap?.setText(short ? `NEED ${money(due - this.shownCash)} MORE` : 'COVERED').setColor(short ? H.clay : H.gold);
     if (this.ui.revealed.includes('payroll')) {
@@ -570,7 +596,7 @@ export class FirmScene extends Phaser.Scene {
       const S = L.strip;
       if (this.ui.revealed.includes('odds')) {
         add(text(this, S.x + 18, S.y + 12, 'LAST CANDLES', { size: 10, weight: 800, color: H.muted, spacing: 1.6 }));
-        const tape = this.ui.tape.slice(-22);
+        const tape = this.ui.tape.slice(-14);
         const mid = S.y + 42;
         if (!tape.length) add(text(this, S.x + 18, mid - 8, 'none yet', { size: 12, weight: 600, color: H.muted }));
         tape.forEach((c, k) => {
@@ -581,13 +607,22 @@ export class FirmScene extends Phaser.Scene {
           g.fillStyle(col, 0.8); g.fillRect(x - 0.75, mid - 14 + off, 1.5, 28);
           g.fillStyle(col, 1); g.fillRoundedRect(x - 4, mid - body / 2 + off, 8, body, 1.5);
         });
-        const bw = 300, bx = S.x + S.w - 18 - bw;
+        // crisis: the one now, or the one coming
+        {
+          const cx0 = S.x + 252, now = s.crisis, cid = now ?? s.nextCrisis;
+          const away = s.crisisCycle - s.payroll.cycle;
+          g.fillStyle(C.line2, 1); g.fillRect(cx0 - 14, S.y + 12, 1, S.h - 24);
+          add(text(this, cx0, S.y + 12, now ? 'CRISIS NOW' : `CRISIS IN ${away} CYCLE${away === 1 ? '' : 'S'}`, { size: 10, weight: 800, color: now ? H.clay : H.muted, spacing: 1.6 }));
+          add(text(this, cx0, S.y + 30, CRISES[cid]?.name ?? '', { size: 15, weight: 800, color: now ? H.blush : H.paper }));
+          this.hits.crisis = { x: cx0 - 14, y: S.y, w: 230, h: S.h };
+        }
+        const bw = 250, bx = S.x + S.w - 18 - bw;
         add(text(this, bx, S.y + 12, 'NEXT CANDLE ODDS', { size: 10, weight: 800, color: H.muted, spacing: 1.6 }));
         g.fillStyle(C.paper, 0.06); g.fillRoundedRect(bx, S.y + 30, bw, 8, 3);
         oddsBar(bx, S.y + 30, bw, 8);
         let lx = bx;
         odds.forEach(([c, p]) => {
-          const t = add(text(this, lx, S.y + 44, `${CANDLE[c] === 'TREND UP' ? 'UP' : CANDLE[c] === 'TREND DOWN' ? 'DOWN' : CANDLE[c]} ${Math.round(p * 100)}%`, { size: 10.5, weight: 800, color: c === 'down' ? H.clay : c === 'news' ? H.gold : c === 'chop' ? H.muted : H.paper, spacing: 0.6 }));
+          const t = add(text(this, lx, S.y + 44, `${CANDLE[c] === 'TREND UP' ? 'UP' : CANDLE[c] === 'TREND DOWN' ? 'DN' : CANDLE[c]} ${Math.round(p * 100)}`, { size: 10.5, weight: 800, color: c === 'down' ? H.clay : c === 'news' ? H.gold : c === 'chop' ? H.muted : H.paper, spacing: 0.6 }));
           lx += Math.max(bw * p, t.width + 10);
         });
         this.hits.odds = { ...S };
@@ -745,6 +780,12 @@ export class FirmScene extends Phaser.Scene {
   }
 
   private renderAll(): void {
+    const s = this.ui.s;
+    const ids: string[] = [];
+    for (const c of s.grid) if (c && (c.revealed || !cardDef(c.def).disguise)) ids.push(c.def);
+    for (const o of s.offers) { if (o.kind === 'excuse') ids.push(`x:${o.id}`); else if (!cardDef(o.id).disguise) ids.push(o.id); }
+    for (const e of s.excuses) ids.push(`x:${e}`);
+    if (this.ui.mode !== 'tutorial' || ids.length) markSeen(ids);
     this.renderHud();
     this.renderRow();
     this.renderGrid();
@@ -789,7 +830,7 @@ export class FirmScene extends Phaser.Scene {
 
   newGame(mode: Mode): void {
     this.guideStop();
-    this.ui = freshUi(mode);
+    this.ui = freshUi(mode, this.ui.founder, this.ui.stake);
     this.shownCash = this.ui.s.cash;
     this.closeOverlay();
     this.build();
@@ -801,29 +842,49 @@ export class FirmScene extends Phaser.Scene {
     J.unlockAudio();
     const prev = this.ui.s;
     this.ui.s = step(this.ui.s, a);
+    this.book(a, prev, this.ui.s);
     if (a.type === 'flashSale' || a.type === 'loan') { J.cashOut(); this.pulseBg(C.gold, 0.8); this.animateCash(prev.cash, this.ui.s.cash, 420); }
     if (toast) this.toast(toast);
     this.afterStep(prev);
   }
 
+  /** File a cash movement under the right line of this cycle's receipt. */
+  private book(a: Action, prev: GameState, next: GameState): void {
+    const L = this.ui.ledger;
+    let d = next.cash - prev.cash;
+    const paid = next.payroll.cycle > prev.payroll.cycle ? this.dueOf(prev) : 0;
+    d += paid;
+    if (a.type === 'tap') L.fees += d;
+    else if (a.type === 'payout') L.payouts += d;
+    else if (a.type === 'draft' || a.type === 'reroll') L.hires += d;
+    else L.moves += d;
+    if (paid) {
+      this.ui.cashout = { ledger: { ...L }, paid, cycle: prev.payroll.cycle, crisis: prev.crisis };
+      this.ui.ledger = { start: next.cash, fees: 0, payouts: 0, hires: 0, moves: 0 };
+    }
+  }
+  private dueOf(s: GameState): number {
+    return s.payroll.amount + (s.payroll.loanOwed > 0 && s.payroll.cycle >= s.payroll.loanDueCycle ? s.payroll.loanOwed : 0);
+  }
+
   private afterStep(prev: GameState): void {
     const s = this.ui.s;
-    if (s.payroll.cycle > prev.payroll.cycle) {
+    const paid = s.payroll.cycle > prev.payroll.cycle;
+    if (paid) {
       J.thud(); J.buzz([30, 40, 30]); this.shake(0.45); this.pulseBg(C.clay, 0.6);
-      this.toast(`Payroll paid · ${money(prev.payroll.amount)}`);
-      this.animateCash(prev.cash, s.cash, 700);
-    } else if (s.phase !== 'dead') {
-      this.shownCash = s.cash;
     }
+    if (s.phase !== 'dead') this.shownCash = s.cash;
     this.renderAll();
     if (s.phase === 'dead') this.showDeath();
+    else if (paid && this.ui.cashout) this.showCashout();
+    else if (s.phase === 'quarter') this.showQuarter();
     this.maybeTips();
   }
 
   private chooseOffer(i: number): void {
     const o = this.ui.s.offers[i];
     if (!o || this.busy) return;
-    if (this.ui.s.cash < offerPrice(o)) { J.loss(); this.toast(`Can't afford ${offerName(o)} · ${money(offerPrice(o))}`); return; }
+    if (this.ui.s.cash < offerPrice(o, this.ui.s)) { J.loss(); this.toast(`Can't afford ${offerName(o)} · ${money(offerPrice(o, this.ui.s))}`); return; }
     if (!this.gate('select')) return;
     J.unlockAudio(); J.tick();
     if (o.kind === 'excuse' || o.id === 'botfarm') {
@@ -925,6 +986,7 @@ export class FirmScene extends Phaser.Scene {
     this.animateCash(prev.cash, next.cash, 560);
     await J.wait(680);
 
+    this.book({ type: 'tap' }, prev, next);
     this.ui.s = next;
     this.shownCash = next.cash;
     this.busy = false;
@@ -1055,7 +1117,7 @@ export class FirmScene extends Phaser.Scene {
     roundRect(g, px, py, pw, ph + below, 20, C.panel, 0.97);
     strokeRect(g, px, py, pw, ph + below, 20, C.line2, 1);
     root.add(g);
-    root.add(text(this, px + pad + 2, py + pad, 'HIRE', { size: 14, weight: 800, spacing: 3.4 }));
+    root.add(text(this, px + pad + 2, py + pad, 'THE HIRING FLOOR', { size: 14, weight: 800, spacing: 3.4 }));
     root.add(text(this, px + pw - pad - 2, py + pad + 2, `cash ${money(s.cash)} · payroll ${money(s.payroll.amount)} in ${Math.max(0, s.payroll.dueDay - s.day)}d`, { size: 12, weight: 700, color: H.muted }).setOrigin(1, 0));
     const ow = (pw - 2 * pad - 2 * (wide ? 16 : 8)) / 3;
     const oy = py + pad + 36;
@@ -1080,7 +1142,7 @@ export class FirmScene extends Phaser.Scene {
 
   private offerCard(o: Offer, i: number, x: number, y: number, w: number, h: number): Phaser.GameObjects.Container {
     const s = this.ui.s;
-    const price = offerPrice(o);
+    const price = offerPrice(o, s);
     const broke = s.cash < price;
     const rarity = offerRarity(o);
     const c = this.add.container(u(x + w / 2), u(y + h / 2));
@@ -1103,7 +1165,7 @@ export class FirmScene extends Phaser.Scene {
     if (h - (by + h / 2) > 30) c.add(text(this, -w / 2 + 12, by, offerBlurb(o), { size: this.L.wide ? 12 : 10.5, weight: 600, color: H.inkSoft, wrap: w - 24, lineSpacing: 1 }));
     // price badge
     const pg = this.add.graphics();
-    const pt = text(this, 0, 0, money(price), { size: this.L.wide ? 13 : 11.5, weight: 800, color: broke ? H.clay : H.ink }).setOrigin(0.5);
+    const pt = text(this, 0, 0, price === 0 ? 'FREE' : money(price), { size: this.L.wide ? 13 : 11.5, weight: 800, color: broke ? H.clay : H.ink }).setOrigin(0.5);
     const bw = pt.width / u(1) + 16;
     roundRect(pg, w / 2 - bw - 8, -h / 2 - 10, bw, 24, 8, broke ? C.panel2 : C.goldDeep);
     roundRect(pg, w / 2 - bw - 8, -h / 2 - 10, bw, 22, 8, broke ? C.panel2 : C.gold);
@@ -1261,6 +1323,7 @@ export class FirmScene extends Phaser.Scene {
     this.busy = true;
     const prev = this.ui.s;
     this.ui.s = step(this.ui.s, a);
+    this.book(a, prev, this.ui.s);
     const r = this.hits['ov:pcard'];
     if (r) {
       const st = text(this, r.x + r.w * 0.42, r.y + r.h / 2, stampText, { size: 32, weight: 800, color: stampText === 'PAID' ? H.gold : H.clay, spacing: 4 }).setOrigin(0.5).setAngle(-12).setDepth(DEPTH.overlay + 5);
@@ -1357,57 +1420,278 @@ export class FirmScene extends Phaser.Scene {
     for (const [k, r] of Object.entries(rects)) this.hit(k, m.x, m.y, r);
   }
 
+  /** A full-window screen over the table (cash-out, quarter, death). Content is built in design units. */
+  private fullscreen(kind: string, build: (c: Phaser.GameObjects.Container) => void, dimA = 0.9): Phaser.GameObjects.Container {
+    this.closeOverlay();
+    this.hideTip();
+    const V = this.L.view;
+    const root = this.add.container(0, 0).setDepth(DEPTH.overlay);
+    const dim = this.add.rectangle(V.x, V.y, V.w, V.h, C.ink, dimA).setOrigin(0).setInteractive();
+    root.add(dim);
+    const content = this.add.container(0, 0);
+    root.add(content);
+    build(content);
+    this.overlay = root;
+    this.overlayKind = kind;
+    dim.setAlpha(0);
+    this.tweens.add({ targets: dim, alpha: 1, duration: 220 });
+    content.setAlpha(0).setY(36);
+    this.tweens.add({ targets: content, alpha: 1, y: 0, duration: 340, ease: 'Back.easeOut', easeParams: [1.1] });
+    return content;
+  }
+  private ovHit(name: string, r: Rect): void { this.hits[`ov:${name}`] = r; }
+
+  // ---------------------------------------------------------------- payroll cash-out (the receipt)
+
+  showCashout(): void {
+    const co = this.ui.cashout;
+    if (!co) { this.showQuarter(); return; }
+    const s = this.ui.s;
+    const { W, H: Hh, wide } = this.L;
+    const cx = W / 2;
+    let stampAt = { x: 0, y: 0 };
+    const lines: { k: string; v: number; strong?: boolean; color?: string }[] = [
+      { k: 'Cash at start of cycle', v: co.ledger.start },
+      { k: 'Fees collected', v: co.ledger.fees },
+      { k: 'Payouts paid', v: co.ledger.payouts },
+      { k: 'Hiring and rerolls', v: co.ledger.hires },
+    ];
+    if (co.ledger.moves) lines.push({ k: 'Plans, sales and loans', v: co.ledger.moves });
+    lines.push({ k: `Payroll · cycle ${co.cycle}`, v: -co.paid, strong: true, color: H.clayDeep });
+    const texts: Phaser.GameObjects.Text[] = [];
+    this.fullscreen('cashout', (c) => {
+      let y = wide ? 54 : 24;
+      c.add(text(this, cx, y, `CYCLE ${co.cycle} CLOSED`, { size: wide ? 13 : 11, weight: 800, color: H.muted, spacing: 4 }).setOrigin(0.5, 0));
+      y += wide ? 24 : 18;
+      const head = text(this, cx, y, 'PAYROLL MET', { size: wide ? 64 : 40, weight: 800, color: H.gold, spacing: wide ? 6 : 3 }).setOrigin(0.5, 0);
+      c.add(head);
+      y += head.height + (wide ? 22 : 14);
+      // the receipt: cream paper, zig-zag bottom, printed lines
+      const pw = wide ? 520 : W - 40, x0 = cx - pw / 2, lh = wide ? 34 : 30;
+      const ph = 34 + lines.length * lh + 20 + (wide ? 56 : 50) + (co.crisis ? lh : 0) + 26;
+      const g = this.add.graphics();
+      g.fillStyle(0x000000, 0.5); g.fillRect(x0 + 4, y + 8, pw, ph);
+      g.fillStyle(C.paper, 1);
+      g.beginPath(); g.moveTo(x0, y); g.lineTo(x0 + pw, y); g.lineTo(x0 + pw, y + ph);
+      const teeth = Math.round(pw / 14);
+      for (let k = 0; k < teeth; k++) { const tx = x0 + pw - (k + 0.5) * (pw / teeth); g.lineTo(tx, y + ph + 7); g.lineTo(tx - pw / teeth / 2, y + ph); }
+      g.lineTo(x0, y + ph); g.closePath(); g.fillPath();
+      c.add(g);
+      c.add(text(this, x0 + 24, y + 18, this.ui.firm.toUpperCase(), { size: 10, weight: 800, color: H.inkSoft, spacing: 2 }));
+      c.add(text(this, x0 + pw - 24, y + 18, `DAY ${s.day - 1}`, { size: 10, weight: 800, color: H.inkSoft, spacing: 2 }).setOrigin(1, 0));
+      let ly = y + 46;
+      lines.forEach((l) => {
+        const kt = text(this, x0 + 24, ly, l.k, { size: wide ? 15 : 13, weight: l.strong ? 800 : 600, color: l.color ?? H.ink });
+        const vt = text(this, x0 + pw - 24, ly, '', { size: wide ? 16 : 14, weight: 800, color: l.color ?? (l.v < 0 ? H.clayDeep : H.ink) }).setOrigin(1, 0);
+        kt.setAlpha(0); vt.setAlpha(0);
+        c.add([kt, vt]); texts.push(kt, vt);
+        ly += lh;
+      });
+      if (co.crisis) {
+        const ct = text(this, x0 + 24, ly, `Survived ${CRISES[co.crisis]?.name ?? 'the crisis'} · Trust +0.3`, { size: wide ? 14 : 12, weight: 800, color: H.goldDeep }).setAlpha(0);
+        c.add(ct); texts.push(ct);
+        ly += lh;
+      }
+      const dg = this.add.graphics();
+      dg.lineStyle(1.5, C.ink, 0.35);
+      for (let dx = x0 + 24; dx < x0 + pw - 24; dx += 9) dg.lineBetween(dx, ly + 6, dx + 4, ly + 6);
+      c.add(dg);
+      ly += 18;
+      c.add(text(this, x0 + 24, ly + 6, 'CASH LEFT', { size: 12, weight: 800, color: H.inkSoft, spacing: 2 }));
+      const left = text(this, x0 + pw - 24, ly - 2, money(0), { size: wide ? 38 : 30, weight: 800, color: H.ink }).setOrigin(1, 0);
+      c.add(left);
+      stampAt = { x: x0 + pw * 0.62, y: y + ph * 0.42 };
+      y += ph + (wide ? 34 : 24);
+      c.add(text(this, cx, y, `NEXT PAYROLL ${money(s.payroll.base)}  ·  GROWS ×${payrollGrowth(s).toFixed(2)} EVERY CYCLE`, { size: wide ? 13 : 10.5, weight: 800, color: H.blush, spacing: 1.4, align: 'center', wrap: W - 40 }).setOrigin(0.5, 0));
+      const bw = wide ? 360 : W - 28, bh = wide ? 76 : 66, by = Hh - (wide ? 44 : 14) - bh;
+      const go = new Button(this, cx - bw / 2, by, bw, bh, 'CONTINUE', { ...STYLE.clay, size: wide ? 20 : 18, spacing: 3, sub: 'plan the next quarter' });
+      go.onClick = () => { J.tick(); this.ui.cashout = null; this.closeOverlay(); if (this.ui.s.phase === 'quarter') this.showQuarter(); else this.renderAll(); };
+      c.add(go);
+      this.ovHit('continue', { x: cx - bw / 2, y: by, w: bw, h: bh });
+      // print the lines one by one, then the total, then the stamp
+      let k = 0;
+      const nextLine = (): void => {
+        if (!go.active) return;
+        if (k < lines.length) {
+          const l = lines[k] as (typeof lines)[number];
+          const kt = texts[k * 2], vt = texts[k * 2 + 1];
+          kt?.setAlpha(1); vt?.setAlpha(1);
+          vt?.setText(k === 0 || l.v === 0 ? money(l.v) : signed(l.v));
+          if (vt) { vt.setScale(1.3); this.tweens.add({ targets: vt, scale: 1, duration: 200, ease: 'Back.easeOut' }); }
+          if (l.v > 0) J.coin(k); else J.tick();
+          k++;
+          this.time.delayedCall(230, nextLine);
+          return;
+        }
+        texts.slice(lines.length * 2).forEach((t) => t.setAlpha(1));
+        const o = { v: 0 };
+        this.tweens.add({ targets: o, v: s.cash, duration: 520, ease: 'Cubic.easeOut', onUpdate: () => left.setText(money(o.v)), onComplete: () => {
+          left.setText(money(s.cash));
+          const st = text(this, stampAt.x, stampAt.y, 'PAID', { size: wide ? 54 : 42, weight: 800, color: H.clayDeep, spacing: 8 }).setOrigin(0.5).setAngle(-14).setAlpha(0).setScale(2.6);
+          const ring = this.add.graphics().setPosition(stampAt.x, stampAt.y).setAngle(-14).setAlpha(0).setScale(2.6);
+          const rw = st.width + 34, rh = st.height + 12;
+          ring.lineStyle(5, C.clayDeep, 1); ring.strokeRoundedRect(-rw / 2, -rh / 2, rw, rh, 10);
+          c.add([ring, st]);
+          this.tweens.add({ targets: [st, ring], alpha: 0.85, scale: 1, duration: 140, ease: 'Quad.easeIn', onComplete: () => { J.stamp(); J.buzz(40); this.shake(0.35); this.pulseBg(C.gold, 0.7); } });
+        } });
+      };
+      this.time.delayedCall(380, nextLine);
+    }, 0.92);
+  }
+
+  // ---------------------------------------------------------------- the quarter: crisis briefing + plan
+
+  showQuarter(): void {
+    const s = this.ui.s;
+    if (s.phase !== 'quarter') return;
+    const { W, H: Hh, wide } = this.L;
+    const cx = W / 2;
+    const legal = legalActions(s);
+    const mul: Record<string, number> = { growth: 1.2, lean: 0.85, fair: 1.1 };
+    this.fullscreen('quarter', (c) => {
+      let y = wide ? 46 : 20;
+      c.add(text(this, cx, y, `CYCLE ${s.payroll.cycle}  ·  DAY ${s.day}`, { size: wide ? 13 : 11, weight: 800, color: H.muted, spacing: 4 }).setOrigin(0.5, 0));
+      y += wide ? 24 : 18;
+      const t = text(this, cx, y, 'Plan the quarter', { size: wide ? 44 : 28, weight: 800 }).setOrigin(0.5, 0);
+      c.add(t);
+      y += t.height + (wide ? 20 : 12);
+      // crisis banner
+      const bw = wide ? 820 : W - 28, bh = wide ? 96 : 84, bx = cx - bw / 2;
+      const now = s.crisis, id = now ?? s.nextCrisis, cr = CRISES[id];
+      const g = this.add.graphics();
+      roundRect(g, bx, y, bw, bh, 16, now ? 0x2a120b : C.panel2, 0.98);
+      strokeRect(g, bx, y, bw, bh, 16, now ? C.clay : C.line2, now ? 2 : 1);
+      const ic = bh - 24;
+      roundRect(g, bx + 12, y + 12, ic, ic, 12, now ? C.clay : C.paper, now ? 1 : 0.9);
+      c.add(g);
+      c.add(this.add.image(bx + 12 + ic / 2, y + 12 + ic / 2, artTexture(this, id)).setDisplaySize(ic * 0.82, ic * 0.82));
+      const tx = bx + 12 + ic + 16;
+      const away = s.crisisCycle - s.payroll.cycle;
+      c.add(text(this, tx, y + (wide ? 14 : 10), now ? 'CRISIS THIS CYCLE' : `NEXT CRISIS · ${away === 1 ? 'NEXT CYCLE' : `IN ${away} CYCLES`}`, { size: wide ? 11 : 9.5, weight: 800, color: now ? H.clay : H.muted, spacing: 2 }));
+      c.add(text(this, tx, y + (wide ? 30 : 24), cr?.name ?? id, { size: wide ? 24 : 17, weight: 800, color: now ? H.blush : H.paper }));
+      c.add(text(this, tx, y + (wide ? 62 : 48), cr?.blurb ?? '', { size: wide ? 13.5 : 11, weight: 600, color: H.muted, wrap: bw - (tx - bx) - 16 }));
+      if (now) { this.pulseBg(C.clay, 0.8); J.alarm(); }
+      y += bh + (wide ? 26 : 14);
+      // the three plans
+      const n = s.plans.length, gap = wide ? 28 : 7;
+      const pw = wide ? 250 : (W - 28 - gap * (n - 1)) / n;
+      const btnH = wide ? 0 : 0;
+      const ph = Math.min(wide ? 340 : 250, Hh - y - (wide ? 90 : 46) - btnH);
+      s.plans.forEach((pid, i) => {
+        const p = PLANS[pid];
+        if (!p) return;
+        const ok = legal.some((a) => a.type === 'plan' && a.id === pid);
+        const pay = Math.round((s.payroll.base * (mul[pid] ?? 1)) / 10) * 10;
+        const foot = pid === 'pr' ? `COSTS ${money(planCost(s, pid))}` : pid === 'raise' ? `+${money(Math.round(s.payroll.base * 0.05) * 10)} NOW` : `PAYROLL ${money(pay)}`;
+        const px = cx - ((n * pw + (n - 1) * gap) / 2) + i * (pw + gap) + pw / 2;
+        const card = new PaperCard(this, px, y + ph / 2, pw, ph, {
+          art: pid, title: p.name, tag: pid === 'steady' ? 'SAFE' : 'PLAN', tagColor: pid === 'steady' ? H.inkSoft : H.goldDeep, body: p.blurb,
+          foot: ok ? foot : 'CAN\'T AFFORD', footColor: ok ? (pay > s.payroll.base ? H.clayDeep : pay < s.payroll.base ? H.goldDeep : H.ink) : H.clayDeep,
+          accent: pid === 'steady' ? undefined : C.gold, locked: !ok,
+        }).deal(120 + i * 110);
+        card.onTap = () => this.choosePlan(pid);
+        c.add(card);
+        this.ovHit(`plan${i}`, { x: px - pw / 2, y, w: pw, h: ph });
+      });
+      y += ph + (wide ? 22 : 12);
+      c.add(text(this, cx, y, 'Tap a plan to open the next five days.', { size: wide ? 13 : 11, weight: 700, color: H.muted }).setOrigin(0.5, 0));
+    });
+  }
+
+  private choosePlan(id: string): void {
+    const s = this.ui.s;
+    if (this.busy || s.phase !== 'quarter') return;
+    if (!legalActions(s).some((a) => a.type === 'plan' && a.id === id)) { J.loss(); this.shake(0.2); return; }
+    const prev = s;
+    this.ui.s = step(s, { type: 'plan', id });
+    this.book({ type: 'plan', id }, prev, this.ui.s);
+    J.cashOut(); J.buzz(20); this.pulseBg(C.gold, 0.5);
+    this.closeOverlay();
+    this.shownCash = this.ui.s.cash;
+    this.renderAll();
+    this.toast(`${PLANS[id]?.name ?? id}${this.ui.s.crisis ? ` · ${CRISES[this.ui.s.crisis]?.name} is live` : ''}`);
+  }
+
+  // ---------------------------------------------------------------- death card
+
   showDeath(): void {
     const s = this.ui.s;
     this.guideStop();
     this.shop?.destroy(); this.shop = null;
-    J.thud(); J.buzz([80, 60, 120]); this.pulseBg(C.clay, 1.2); this.shake(0.9);
-    const best = store<{ days: number; val: number }>('best') ?? { days: 0, val: 0 };
-    const newBest = s.stats.peakValuation > best.val && this.ui.mode !== 'tutorial';
-    if (newBest) store('best', { days: s.day, val: s.stats.peakValuation });
+    const first = !this.ui.record;
+    if (!this.ui.record) this.ui.record = recordRun(s, this.ui.mode === 'tutorial');
+    const rec = this.ui.record;
+    if (first) { J.thud(); J.buzz([80, 60, 120]); this.pulseBg(C.clay, 1.2); this.shake(0.9); }
     const near = s.cause === 'payroll' ? `${money(s.shortBy)} short` : s.cause === 'trust' ? 'Trust hit zero' : 'Heat hit 100';
     const share = `${this.ui.firm} lasted ${s.day} days on FIRM. Peak valuation ${money(s.stats.peakValuation)}. ${CAUSE[s.cause ?? 'payroll']}, ${near.toLowerCase()}.`;
-    const pad = 20;
-    const rects: Record<string, Rect> = {};
-    const m = this.modal('death', 440, (c, w) => {
-      let y = pad;
-      c.add(text(this, pad, y, `FIRM CLOSED · DAY ${s.day}`, { size: 10.5, weight: 800, color: H.inkSoft, spacing: 1.8 }));
-      y += 22;
-      const name = text(this, pad, y, this.ui.firm, { size: 28, weight: 800, color: H.ink, wrap: w - 2 * pad });
-      c.add(name);
-      y += name.height / u(1) + 8;
-      c.add(text(this, pad, y, CAUSE[s.cause ?? 'payroll'] ?? '', { size: 16, weight: 800, color: H.clayDeep }));
-      c.add(text(this, pad, y + 22, near, { size: 14, weight: 700, color: H.inkSoft }));
-      y += 52;
-      const cells: [string, string][] = [['DAYS', String(s.day)], ['PEAK VALUE', money(s.stats.peakValuation)], ['TRUST', s.trust.toFixed(1)], ['PAID', String(s.stats.payoutsPaid)], ['DENIED', String(s.stats.payoutsDenied)], ['FRAUD CAUGHT', String(s.stats.fraudCaught)]];
-      const cw = (w - 2 * pad) / 3;
-      const g = this.add.graphics();
+    const { W, H: Hh, wide } = this.L;
+    const cx = W / 2;
+    this.fullscreen('death', (c) => {
+      const cw = wide ? 520 : W - 28, pad = wide ? 28 : 20;
+      const x0 = cx - cw / 2;
+      let y = wide ? 40 : 18;
+      const card = this.add.container(0, 0);
+      c.add(card);
+      const items: Phaser.GameObjects.GameObject[] = [];
+      const top = y;
+      y += pad;
+      items.push(text(this, x0 + pad, y, `FIRM CLOSED · DAY ${s.day}`, { size: 11, weight: 800, color: H.inkSoft, spacing: 2 }));
+      items.push(text(this, x0 + cw - pad, y, `${(FOUNDERS[s.founder]?.name ?? '').toUpperCase()} · ${(STAKES[s.stake - 1]?.name ?? '').toUpperCase()}`, { size: 11, weight: 800, color: H.inkSoft, spacing: 1.4 }).setOrigin(1, 0));
+      y += 24;
+      const name = text(this, x0 + pad, y, this.ui.firm, { size: wide ? 34 : 26, weight: 800, color: H.ink, wrap: cw - 2 * pad });
+      items.push(name);
+      y += name.height + 10;
+      items.push(text(this, x0 + pad, y, CAUSE[s.cause ?? 'payroll'] ?? '', { size: wide ? 20 : 17, weight: 800, color: H.clayDeep }));
+      items.push(text(this, x0 + pad, y + (wide ? 28 : 24), near, { size: 14, weight: 700, color: H.inkSoft }));
+      y += wide ? 64 : 56;
+      const cells: [string, string][] = [['DAYS', String(s.day)], ['PEAK VALUE', money(s.stats.peakValuation)], ['CRISES', String(s.stats.crisesSurvived)], ['PAID', String(s.stats.payoutsPaid)], ['DENIED', String(s.stats.payoutsDenied)], ['FRAUD CAUGHT', String(s.stats.fraudCaught)]];
+      const cellW = (cw - 2 * pad) / 3, cellH = wide ? 62 : 54;
+      const cg = this.add.graphics();
       cells.forEach(([k, v], idx) => {
-        const cx = pad + (idx % 3) * cw, cy = y + Math.floor(idx / 3) * 56;
-        roundRect(g, cx + 1, cy + 1, cw - 2, 54, 6, C.paper2);
-        c.add(text(this, cx + 10, cy + 10, k, { size: 9, weight: 800, color: H.inkSoft, spacing: 1.2 }));
-        c.add(text(this, cx + 10, cy + 26, v, { size: 17, weight: 800, color: H.ink }));
+        const ccx = x0 + pad + (idx % 3) * cellW, ccy = y + Math.floor(idx / 3) * (cellH + 6);
+        roundRect(cg, ccx + 2, ccy, cellW - 4, cellH, 8, C.paper2);
+        items.push(text(this, ccx + 12, ccy + 10, k, { size: 9, weight: 800, color: H.inkSoft, spacing: 1.2 }));
+        items.push(text(this, ccx + 12, ccy + (wide ? 28 : 25), v, { size: wide ? 20 : 17, weight: 800, color: H.ink }));
       });
-      c.addAt(g, 1);
-      y += 120;
-      c.add(text(this, pad, y, newBest ? 'NEW PERSONAL BEST' : best.val ? `BEST ${money(best.val)} · ${best.days} DAYS` : '', { size: 11, weight: 800, color: H.goldDeep, spacing: 1.6 }));
-      y += 26;
-      const nb = new Button(this, pad, y, w - 2 * pad, 58, 'NEW FIRM', { ...STYLE.clay, size: 17, spacing: 3, sub: this.L.wide ? 'space' : undefined });
-      nb.onClick = () => { J.tick(); this.newGame('random'); };
-      c.add(nb);
-      rects.new = { x: pad, y, w: w - 2 * pad, h: 58 };
-      y += 68;
-      const bw = (w - 2 * pad - 10) / 2;
-      const daily = new Button(this, pad, y, bw, 44, 'DAILY TAPE', { fill: C.paper, deep: C.paper3, ink: H.ink, stroke: C.paper3, size: 11 });
-      daily.onClick = () => { J.tick(); this.newGame('daily'); };
-      const copy = new Button(this, pad + bw + 10, y, bw, 44, 'COPY RESULT', { fill: C.paper, deep: C.paper3, ink: H.ink, stroke: C.paper3, size: 11 });
-      copy.onClick = () => { navigator.clipboard?.writeText(share).then(() => this.toast('Copied'), () => this.toast(share)); };
-      c.add([daily, copy]);
-      return y + 44 + pad;
-    }, { paper: true, center: true });
-    for (const [k, r] of Object.entries(rects)) this.hit(k, m.x, m.y, r);
-    m.content.setAngle(-3);
-    this.tweens.add({ targets: m.content, angle: 0, duration: 520, ease: 'Back.easeOut' });
+      y += 2 * (cellH + 6) + 10;
+      const lines: string[] = [];
+      if (rec.newBest) lines.push('NEW PERSONAL BEST');
+      for (const u0 of rec.unlocked) lines.push(`UNLOCKED · ${u0.toUpperCase()}`);
+      for (const l of lines) { items.push(text(this, x0 + pad, y, l, { size: 12, weight: 800, color: H.goldDeep, spacing: 1.6 })); y += 22; }
+      y += pad - 6;
+      const bgG = this.add.graphics();
+      roundRect(bgG, x0 + 3, top + 10, cw, y - top, 18, 0x000000, 0.5);
+      roundRect(bgG, x0, top, cw, y - top, 18, C.paper);
+      card.add(bgG); card.add(cg); card.add(items);
+      // CLOSED stamp across the card
+      const st = text(this, x0 + cw * 0.76, top + (wide ? 130 : 112), 'CLOSED', { size: wide ? 40 : 30, weight: 800, color: H.clay, spacing: 6 }).setOrigin(0.5).setAngle(-12);
+      const sr = this.add.graphics().setPosition(st.x, st.y).setAngle(-12);
+      sr.lineStyle(5, C.clay, 1); sr.strokeRoundedRect(-(st.width + 34) / 2, -(st.height + 12) / 2, st.width + 34, st.height + 12, 10);
+      card.add([sr, st]);
+      if (first) { [st, sr].forEach((o) => { o.setScale(3).setAlpha(0); this.tweens.add({ targets: o, scale: 1, alpha: 0.85, delay: 420, duration: 150, ease: 'Quad.easeIn', onComplete: () => { if (o === st) { J.stamp(); this.shake(0.4); } } }); }); }
+      else { st.setAlpha(0.85); sr.setAlpha(0.85); }
+      card.setAngle(-2);
+      this.tweens.add({ targets: card, angle: 0, duration: 520, ease: 'Back.easeOut' });
+      // actions
+      y += wide ? 24 : 14;
+      const bh = wide ? 72 : 62;
+      const again = new Button(this, x0, y, cw, bh, 'NEW RUN', { ...STYLE.clay, size: wide ? 20 : 18, spacing: 3, sub: `${FOUNDERS[this.ui.founder]?.name ?? ''} · ${STAKES[this.ui.stake - 1]?.name ?? ''}${wide ? ' · space' : ''}` });
+      again.onClick = () => { J.tick(); this.newGame(this.ui.mode === 'tutorial' ? 'random' : this.ui.mode === 'daily' ? 'random' : 'random'); };
+      c.add(again);
+      this.ovHit('new', { x: x0, y, w: cw, h: bh });
+      y += bh + 10;
+      const sw = (cw - 20) / 3, sh = wide ? 50 : 48;
+      const b1 = new Button(this, x0, y, sw, sh, 'CHANGE FIRM', { ...STYLE.dark, size: 11 });
+      b1.onClick = () => goTo(this, 'setup');
+      const b2 = new Button(this, x0 + sw + 10, y, sw, sh, 'COPY RESULT', { ...STYLE.dark, size: 11 });
+      b2.onClick = () => { navigator.clipboard?.writeText(share).then(() => this.toast('Copied'), () => this.toast(share)); };
+      const b3 = new Button(this, x0 + 2 * (sw + 10), y, sw, sh, 'MENU', { ...STYLE.dark, size: 11 });
+      b3.onClick = () => goTo(this, 'title');
+      c.add([b1, b2, b3]);
+      this.ovHit('change', { x: x0, y, w: sw, h: sh });
+      this.ovHit('menu', { x: x0 + 2 * (sw + 10), y, w: sw, h: sh });
+      void Hh;
+    }, 0.86);
   }
 
   // ---------------------------------------------------------------- tooltips + toast
@@ -1445,7 +1729,8 @@ export class FirmScene extends Phaser.Scene {
     const g = this.add.graphics();
     roundRect(g, -w / 2, -h / 2 + 4, w, h, 12, 0x000000, 0.4);
     roundRect(g, -w / 2, -h / 2, w, h, 12, C.paper);
-    const c = this.add.container(this.L.wide ? this.L.center.x + this.L.center.w / 2 : this.L.W / 2, this.L.wide ? 56 : 20 + h / 2, [g, t]).setDepth(DEPTH.toast);
+    const ty = this.L.wide ? this.L.cta.y - 30 : this.L.grid.y + this.L.grid.h - h / 2 - 4;
+    const c = this.add.container(this.L.wide ? this.L.center.x + this.L.center.w / 2 : this.L.W / 2, ty, [g, t]).setDepth(DEPTH.toast);
     c.setAlpha(0).setScale(0.8);
     this.tweens.add({ targets: c, alpha: 1, scale: 1, duration: 180, ease: 'Back.easeOut' });
     this.tweens.add({ targets: c, alpha: 0, delay: 2200, duration: 220, onComplete: () => c.destroy() });
@@ -1642,13 +1927,13 @@ export class FirmScene extends Phaser.Scene {
     return {
       get state() { return self.ui.s; },
       get ui() { return self.ui; },
-      view: () => ({ phase: self.ui.s.phase, busy: self.busy, shop: !!self.shop, placing: self.ui.selected !== null, overlay: self.overlayKind, guide: !!self.guideNow, wait: self.guideNow?.o.wait ?? null, hint: self.guideNow?.o.hint ?? null }),
+      view: () => ({ screen: 'firm', phase: self.ui.s.phase, busy: self.busy, shop: !!self.shop, placing: self.ui.selected !== null, overlay: self.overlayKind, guide: !!self.guideNow, wait: self.guideNow?.o.wait ?? null, hint: self.guideNow?.o.hint ?? null }),
       rect: (name: string) => {
         const r = self.hits[name] ?? self.hits[`ov:${name}`];
-        if (!r) return null;
-        const { view: V, fit } = self.L;
-        return { x: (r.x - V.x) * fit, y: (r.y - V.y) * fit, w: r.w * fit, h: r.h * fit };
+        return r ? cssRect(self.L, r) : null;
       },
+      quarter: () => self.showQuarter(),
+      cashout: () => self.showCashout(),
       layout: () => ({ W: self.L.W, H: self.L.H, k: self.L.k, fit: self.L.fit, wide: self.L.wide }),
       firstEmpty: () => self.ui.s.grid.findIndex((c) => c === null),
       load: (seed: number) => { self.guideStop(); const u0 = freshUi('random'); u0.s = newRun(seed); u0.firm = firmName(seed); self.ui = u0; self.shownCash = u0.s.cash; self.closeOverlay(); self.build(); },
