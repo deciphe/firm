@@ -307,7 +307,7 @@ test('denying a clean trader costs Trust and Heat', () => {
   let s = tap(setup({ 0: card(100, 'grinder', { progress: 9 }) }, 'chop'));
   s = step(s, { type: 'payout', decision: 'deny', excuse: 'terms' });
   assert.equal(findCard(s, 100), null);
-  assert.ok(Math.abs(s.trust - (BALANCE.startTrust - 0.45)) < 1e-9);
+  assert.ok(Math.abs(s.trust - (BALANCE.startTrust - 0.6)) < 1e-9);
   assert.equal(s.heat, 10);
 });
 

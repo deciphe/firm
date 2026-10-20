@@ -1,0 +1,10 @@
+
+FIRM balance run: 10000 games per bot
+
+bot          p10  median  p90   max  | deaths (payroll/trust/heat)       | med. valuation | paid/denied per run
+random        11      16   20    35  |  12% /  85% /   3%            |           4468 | 2.6 / 4.3
+naive         10      15   25    80  | 100% /   0% /   0%            |           5244 | 6.9 / 0
+alwaysPay     15      20   35    75  | 100% /   0% /   0%            |          12210 | 14.7 / 0
+alwaysDeny    19      25   34    50  |  16% /  82% /   2%            |           7987 | 2.3 / 4.6
+greedy        14      19   25    45  |   0% /  98% /   2%            |           6061 | 2 / 4.2
+smart         24      35   45    75  |  96% /   2% /   2%            |          13439 | 17.9 / 1.3

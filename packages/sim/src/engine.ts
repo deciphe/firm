@@ -15,7 +15,7 @@ export const BALANCE = {
   startTrust: 3,
   cycleDays: 5,
   payrollStart: 600,
-  payrollGrowth: 1.5,
+  payrollGrowth: 1.4,
   maxTrust: 5,
   maxHeat: 100,
   heatDecay: 2,
@@ -397,7 +397,7 @@ function decidePayout(s: GameState, rng: Rng, decision: 'pay' | 'stall' | 'deny'
         s.heat = clamp(s.heat + 18 * heatMul, 0, BALANCE.maxHeat);
         post(s, '@influencer_ty', 'GOING LIVE IN 10. This firm just denied me. Bring popcorn.', 'bad');
       } else {
-        s.trust = clamp(s.trust - 0.45 * reuse, 0, BALANCE.maxTrust);
+        s.trust = clamp(s.trust - 0.6 * reuse, 0, BALANCE.maxTrust);
         s.heat = clamp(s.heat + 10 * heatMul, 0, BALANCE.maxHeat);
         post(s, rng.pick(['@fundedfrank', '@nq_nate', '@grind_guy']), `Denied $${req.amount.toLocaleString('en-US')} for "${ex.name}". I followed every rule.`, 'bad');
       }
