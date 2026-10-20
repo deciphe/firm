@@ -249,6 +249,7 @@ function resolveDay(s: GameState, rng: Rng): void {
     if (def.kind !== 'trader' || !def.onDay) return null;
     return def.onDay({ candle, rng, card: c, neighbors: neighborsOf(i).map((n) => s.grid[n] ?? null), countOnGrid });
   });
+  const baseCash = outcomes.map((o) => o?.cash ?? 0);
 
   s.grid.forEach((c, i) => { if (c) cardDef(c.def).aura?.(auraCtx(i, c, outcomes)); });
 
@@ -276,7 +277,7 @@ function resolveDay(s: GameState, rng: Rng): void {
       c.progress = Math.min(c.progress, def.threshold);
       if (c.progress >= def.threshold && c.stalledUntil <= s.day) requests.push(c.uid);
     }
-    results.push({ uid: c.uid, cash: o.cash, progress: o.progress });
+    results.push({ uid: c.uid, base: baseCash[i] ?? 0, cash: o.cash, progress: o.progress });
   });
 
   const spawned: number[] = [];

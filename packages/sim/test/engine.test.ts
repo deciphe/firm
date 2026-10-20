@@ -199,7 +199,9 @@ test('Bulk Order fills up to three empty slots with bots', () => {
 // ---------------------------------------------------------------- staff
 
 test('Affiliate adds 50% to adjacent gamblers', () => {
-  assert.equal(incomeOf(tap(setup({ 0: 'gambler', 1: 'affiliate' }, 'chop')), 100), 45);
+  const s = tap(setup({ 0: 'gambler', 1: 'affiliate' }, 'chop'));
+  assert.equal(incomeOf(s, 100), 45);
+  assert.equal(s.lastReport?.results.find((r) => r.uid === 100)?.base, 30);
 });
 
 test('Discord Mod adds 10 to adjacent grinders', () => {

@@ -39,6 +39,8 @@ export interface FeedPost {
 
 export interface CardResult {
   uid: number;
+  /** Fee before staff, influencers and Trust. */
+  base: number;
   cash: number;
   progress: number;
 }
