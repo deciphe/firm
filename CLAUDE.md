@@ -15,13 +15,17 @@ When the doc and this file disagree, ask the user.
 ## Stack
 
 - TypeScript (strict) everywhere. pnpm workspaces. Node 20+.
-- Rendering: plain DOM + CSS for the board and cards, canvas for pixel sprites, Web Audio for synthesised
-  sound, Web Animations for juice. Decided over Phaser: a 20-tile card game gains nothing from an engine and
-  loses crisp text, small downloads and easy phone layouts. Add an engine later only for an effect DOM can't do.
-- esbuild bundles the game into one self-contained HTML page (`apps/game/build.mjs`).
-- Tests: `node:test` via `tsx --test`. Playwright (Python) drives `apps/game/shoot.py` for screenshot audits.
+- Engine: Phaser 3.90.0 (WebGL). The published page loads it from cdnjs
+  (`https://cdnjs.cloudflare.com/ajax/libs/phaser/3.90.0/phaser.min.js`); local builds use the vendored copy in
+  `apps/game/vendor/` with types in `apps/game/vendor/types/`. Phaser is a global; do not import it.
+- Everything renders in-engine: background paint-swirl shader (`src/engine/shaders.ts`), CRT post-process,
+  springy cards (`src/engine/card.ts`), UI kit (`src/engine/ui.ts`), the whole game scene (`src/engine/scene.ts`).
+  The canvas runs at device pixel ratio; layout numbers are CSS px passed through `u()`.
+- Sound is synthesised with Web Audio (`src/juice.ts`). Card art is generated stipple (`src/stipple.ts`).
+- esbuild bundles the game (`apps/game/build.mjs`) into `dist/firm.html` (published) and `dist/dev.html` (local).
+- Tests: `node:test` via `tsx --test`. `apps/game/shoot.py` plays the game through real canvas clicks
+  (`__firm.rect(name)`, `__firm.view()`) and screenshots every key state.
 - Capacitor to wrap the web build as iOS and Android apps (later phase).
-- Web build deploys to Cloudflare Pages.
 
 ## Architecture
 
@@ -29,7 +33,7 @@ When the doc and this file disagree, ask the user.
 firm/
   packages/sim/    pure TypeScript game rules engine. NO Phaser, NO DOM, NO browser APIs.
   packages/bots/   headless bot players + balance runner (CLI, runs in Node)
-  apps/game/       web client. Renders sim state, sends player actions. No game rules here.
+  apps/game/       Phaser client. Renders sim state, sends player actions. No game rules here.
   design/          design tokens, sprite sources, screenshot audits
 ```
 
@@ -98,8 +102,8 @@ Balatro's table, in the Flat MASSIVE language with Claude's warmth.
   (money, payouts), platinum #c9ccd1 (staff, trust), bronze #b0805a (heat), Claude clay #d97757 for the
   main action and the mult box, soft steel blue #86a9d4 for the fees box.
 - Type: Manrope everywhere (loaded from Google Fonts; Inter is the local fallback), tabular numbers.
-- Identity: lunar stipple. A dotted moon turns slowly behind the game (`src/stipple.ts`); every card face
-  is a stippled ink illustration generated from simple shapes. No gradients on art, no cartoon faces.
+- Background: Balatro-style flowing paint swirl in ink, deep felt green and clay, chunky pixels, CRT finish.
+  Every card face is a stippled ink illustration generated from simple shapes. No cartoon faces.
 - Juice: cards sway, jump and pop blue fee chips and clay mult chips in order; the boxes bump; Today
   catches fire on record days; payout cards flip and get stamped. Juice only on money moments.
 

@@ -220,15 +220,21 @@ export function stippleArt(id: string, ink = '#080809'): string {
   const key = `${id}:${ink}`;
   const hit = artCache.get(key);
   if (hit) return hit;
+  const url = stippleCanvas(id, ink).toDataURL();
+  artCache.set(key, url);
+  return url;
+}
+
+/** The same illustration as a canvas (for game textures). */
+export function stippleCanvas(id: string, ink = '#080809', SCALE = 3): HTMLCanvasElement {
   const draw = ART[id] ?? ART.retail;
   const mask = document.createElement('canvas');
   mask.width = S; mask.height = S;
   const m = mask.getContext('2d');
   const out = document.createElement('canvas');
-  const SCALE = 3;
   out.width = S * SCALE; out.height = S * SCALE;
   const o = out.getContext('2d');
-  if (!m || !o || !draw) return '';
+  if (!m || !o || !draw) return out;
   m.fillStyle = '#000'; m.strokeStyle = '#000';
   draw(m);
   const px = m.getImageData(0, 0, S, S).data;
@@ -253,9 +259,7 @@ export function stippleArt(id: string, ink = '#080809'): string {
       o.fill();
     }
   }
-  const url = out.toDataURL();
-  artCache.set(key, url);
-  return url;
+  return out;
 }
 
 export const ART_IDS = Object.keys(ART);
