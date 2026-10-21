@@ -98,9 +98,14 @@ def main():
             if v.get('phase') == 'draft' and v.get('shop'):
                 s = pg.evaluate('__firm.state')
                 prices = pg.evaluate('__firm.prices()')
+                # keep enough back to make payroll at roughly today's earning rate
+                hist = s['stats']['incomeHistory'][-3:] or [150]
+                rate = sum(hist) / len(hist)
+                left = max(0, s['payroll']['dueDay'] - s['day'])
+                spare = s['cash'] - max(0, s['payroll']['amount'] - rate * left) + (30 * left if left >= 2 else 0)
                 best = None
                 for i, pr in enumerate(prices):
-                    if pr <= s['cash'] - 60 and (best is None or pr < prices[best]):
+                    if pr <= spare and (best is None or pr > prices[best]):
                         best = i
                 if best is not None:
                     click(f'offer{best}'); pg.wait_for_timeout(300)

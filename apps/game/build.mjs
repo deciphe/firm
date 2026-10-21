@@ -10,7 +10,7 @@ const esbuild = require('esbuild');
 
 const result = await esbuild.build({
   entryPoints: [resolve(here, 'src/main.ts')],
-  bundle: true, format: 'iife', target: 'es2020', minify: true, write: false,
+  bundle: true, format: 'iife', target: 'es2020', minify: !process.env.FIRM_DEBUG, write: false,
   alias: { '@firm/sim': resolve(here, '../../packages/sim/src/index.ts') },
   define: { 'process.env.NODE_ENV': '"production"' },
 });

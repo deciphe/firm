@@ -128,6 +128,7 @@ export class Button extends Phaser.GameObjects.Container {
     roundRect(this.bg, -bw / 2, -bh / 2 + 4, bw, bh - 4, 12, style.deep);
     roundRect(this.bg, -bw / 2, -bh / 2 + (4 - lip), bw, bh - 4, 12, style.fill);
     if (style.stroke !== undefined) strokeRect(this.bg, -bw / 2, -bh / 2 + (4 - lip), bw, bh - 4, 12, style.stroke, 1);
+    freeze(this.bg, { x: -bw / 2 - 1, y: -bh / 2 - 1, w: bw + 2, h: bh + 2 });
     const cy = u((4 - lip) / 2 - 2);
     if (this.subLabel) { this.label.setY(cy - u(7)); this.subLabel.setY(cy + u(12)); } else this.label.setY(cy);
   }
@@ -242,4 +243,61 @@ export class Num extends Phaser.GameObjects.Container {
     });
     this.list.forEach((g) => { (g as Phaser.GameObjects.Text).setOrigin(0.5, this.oy); });
   }
+}
+
+/**
+ * Phaser re-triangulates every Graphics shape on every frame, which made the table CPU-bound (~25 fps on an
+ * integrated GPU). Static shapes are drawn once into a texture instead.
+ */
+let frozenId = 0;
+
+/** Draw shapes once into a shared, cached texture (same key = same picture). Returns the texture key. */
+export function bakeShape(scene: Phaser.Scene, key: string, w: number, h: number, draw: (g: Phaser.GameObjects.Graphics) => void, ox = 0, oy = 0): string {
+  const k = TEXT_RES;
+  const full = `${key}@${k.toFixed(2)}`;
+  if (scene.textures.exists(full)) return full;
+  const g = scene.make.graphics({}, false);
+  draw(g);
+  const dt = scene.textures.addDynamicTexture(full, Math.max(1, Math.ceil(w * k)), Math.max(1, Math.ceil(h * k)));
+  if (dt) {
+    g.setScale(k).setPosition(ox * k, oy * k);
+    dt.draw(g);
+  }
+  g.destroy();
+  return full;
+}
+
+/**
+ * Freeze an existing Graphics: render it into its own texture covering `area` (design units), hide the
+ * Graphics and show an Image in its place (same parent, depth and order). Call again after redrawing.
+ */
+export function freeze(g: Phaser.GameObjects.Graphics, area: { x: number; y: number; w: number; h: number }): Phaser.GameObjects.Image {
+  const scene = g.scene;
+  const k = TEXT_RES;
+  const holder = g as unknown as { __frozen?: Phaser.GameObjects.Image; __key?: string };
+  const key = holder.__key ?? `frz:${++frozenId}`;
+  holder.__key = key;
+  const tw = Math.max(1, Math.ceil(area.w * k)), th = Math.max(1, Math.ceil(area.h * k));
+  let dt = scene.textures.exists(key) ? (scene.textures.get(key) as Phaser.Textures.DynamicTexture) : scene.textures.addDynamicTexture(key, tw, th);
+  if (!dt) throw new Error('no dynamic texture');
+  if (dt.width !== tw || dt.height !== th) dt.setSize(tw, th);
+  dt.clear();
+  const { x, y, scaleX, scaleY, alpha } = g;
+  g.setVisible(true).setAlpha(1).setPosition((x - area.x) * k, (y - area.y) * k).setScale(k * scaleX, k * scaleY);
+  dt.draw(g);
+  g.setPosition(x, y).setScale(scaleX, scaleY).setAlpha(alpha).setVisible(false);
+  let img = holder.__frozen;
+  if (!img || !img.scene) {
+    img = scene.make.image({ x: area.x, y: area.y, key }, false).setOrigin(0);
+    const parent = g.parentContainer;
+    if (parent) parent.addAt(img, parent.getIndex(g));
+    else { scene.add.existing(img); img.setDepth(g.depth); scene.children.moveBelow(img as unknown as Phaser.GameObjects.GameObject, g); }
+    holder.__frozen = img;
+    const im = img;
+    g.once('destroy', () => { im.destroy(); if (scene.textures.exists(key)) scene.textures.remove(key); });
+  } else {
+    img.setTexture(key).setPosition(area.x, area.y);
+  }
+  img.setDisplaySize(area.w, area.h).setAlpha(alpha);
+  return img;
 }

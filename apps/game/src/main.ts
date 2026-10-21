@@ -59,6 +59,7 @@ async function boot(data: { ui?: UiState }): Promise<void> {
   (window as unknown as { __firm: unknown }).__firm = new Proxy({}, {
     get: (_t, k) => {
       if (k === 'go') return go;
+      if (k === 'game') return game;
       if (k === 'screen') return active() ? (active() as unknown as Phaser.Scene).scene.key : null;
       const sc = active();
       const dbg = sc?.debug() ?? {};

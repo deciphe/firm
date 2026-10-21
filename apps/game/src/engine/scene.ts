@@ -7,7 +7,7 @@ import { CardView, artTexture, cardLook } from './card.ts';
 import type { CardLook } from './card.ts';
 import { BG_FRAG, CrtPipeline } from './shaders.ts';
 import { C, DEPTH, H } from './theme.ts';
-import { Button, Num, STYLE, Spring, dashedRect, roundRect, setTextRes, strokeRect, text, u } from './ui.ts';
+import { Button, Num, STYLE, Spring, bakeShape, dashedRect, freeze, roundRect, setTextRes, strokeRect, text, u } from './ui.ts';
 import { PaperCard } from './card.ts';
 import { markSeen, recordRun } from './meta.ts';
 import type { RunRecord } from './meta.ts';
@@ -135,6 +135,8 @@ export class FirmScene extends Phaser.Scene {
   private hudG!: Phaser.GameObjects.Graphics;
   private hudDyn!: Phaser.GameObjects.Graphics;
   private alarmG!: Phaser.GameObjects.Graphics;
+  private alarmImg: Phaser.GameObjects.Image | null = null;
+  private hudDynImg: Phaser.GameObjects.Image | null = null;
   private chipBox!: Phaser.GameObjects.Container;
   private multBox!: Phaser.GameObjects.Container;
   private todayBox!: Phaser.GameObjects.Container;
@@ -298,16 +300,22 @@ export class FirmScene extends Phaser.Scene {
     this.buildRow();
     this.buildGrid();
     this.buildBar();
+    freeze(this.hudG, { x: 0, y: 0, w: this.L.W, h: this.L.H });
     this.renderAll();
   }
 
   // ---------------------------------------------------------------- HUD
 
   private box(x: number, y: number, w: number, h: number, fill: number, stroke: number = C.line, a = 1, reveal?: string, r = 12): void {
-    let g = this.hudG;
-    if (reveal) { g = this.add.graphics().setDepth(DEPTH.hud); (this.veiled[reveal] ??= []).push(g); }
-    roundRect(g, x, y, w, h, r, fill, a);
-    strokeRect(g, x, y, w, h, r, stroke, 1);
+    if (reveal) {
+      const g = this.add.graphics().setDepth(DEPTH.hud);
+      roundRect(g, x, y, w, h, r, fill, a);
+      strokeRect(g, x, y, w, h, r, stroke, 1);
+      (this.veiled[reveal] ??= []).push(freeze(g, { x: x - 2, y: y - 2, w: w + 4, h: h + 4 }));
+      return;
+    }
+    roundRect(this.hudG, x, y, w, h, r, fill, a);
+    strokeRect(this.hudG, x, y, w, h, r, stroke, 1);
   }
 
   private label(name: string, x: number, y: number, str: string, o: Parameters<typeof text>[4], reveal?: string): Phaser.GameObjects.Text | Num {
@@ -332,6 +340,7 @@ export class FirmScene extends Phaser.Scene {
     roundRect(g, -w / 2, -h / 2, w, h - 1, 8, fill);
     const v = new Num(this, 0, -1, '0', { size, weight: 800, color: ink }).setOrigin(0.5);
     c.add([g, v]);
+    freeze(g, { x: -w / 2 - 1, y: -h / 2 - 1, w: w + 2, h: h + 4 });
     this.hud[key] = v;
     this.boxSprings[key] = new Spring(1, 1, 380, 16);
     return c;
@@ -545,7 +554,10 @@ export class FirmScene extends Phaser.Scene {
     this.hud.heatFx?.setText(hw.word).setColor(hw.color);
     // alarm ring around payroll when it can't be covered
     this.alarmG.clear();
-    if (this.urgent) { const P = this.geo.payBox; strokeRect(this.alarmG, P.x - 1, P.y - 1, P.w + 2, P.h + 2, 15, C.clay, 2.5); }
+    const PB = this.geo.payBox;
+    if (this.urgent) strokeRect(this.alarmG, PB.x - 1, PB.y - 1, PB.w + 2, PB.h + 2, 15, C.clay, 2.5);
+    this.alarmImg = freeze(this.alarmG, { x: PB.x - 4, y: PB.y - 4, w: PB.w + 8, h: PB.h + 8 });
+    this.hudDynImg = freeze(this.hudDyn, this.L.wide ? this.L.panel : { x: this.L.panel.x - 2, y: 0, w: this.L.panel.w + 4, h: this.L.strip.y });
     // score + stats
     const best = store<{ days: number; val: number }>('best');
     this.hud.val?.setText(money(valuation(s)));
@@ -563,7 +575,8 @@ export class FirmScene extends Phaser.Scene {
     if (this.L.wide) return;
     const on = this.compact();
     const keep = new Set(['mark', 'firm']);
-    const fullHud: { setVisible: (v: boolean) => unknown }[] = [this.hudG, this.hudDyn, this.alarmG, this.rowLayer, this.chipBox, this.multBox, this.todayBox];
+    const frozen = (g: Phaser.GameObjects.Graphics): Phaser.GameObjects.Image | undefined => (g as unknown as { __frozen?: Phaser.GameObjects.Image }).__frozen;
+    const fullHud: ({ setVisible: (v: boolean) => unknown } | undefined)[] = [frozen(this.hudG), this.hudDynImg ?? undefined, this.alarmImg ?? undefined, this.rowLayer, this.chipBox, this.multBox, this.todayBox];
     for (const o of fullHud) o?.setVisible(!on);
     if (on) for (const objs of Object.values(this.veiled)) objs.forEach((o) => (o as unknown as Phaser.GameObjects.Components.Visible).setVisible(false));
     for (const [k, t] of Object.entries(this.hud)) if (!keep.has(k) && !t.parentContainer) t.setVisible(on ? false : t.visible);
@@ -631,10 +644,19 @@ export class FirmScene extends Phaser.Scene {
   }
 
   private renderRow(): void {
+    this.rowG = null;
+    this.renderRowInner();
+    const L = this.L;
+    if (this.rowG) freeze(this.rowG, L.wide ? { x: L.strip.x - 2, y: 0, w: (L.side?.x ?? 0) + (L.side?.w ?? 0) - L.strip.x + 4, h: L.H } : { x: 0, y: L.strip.y - 2, w: L.W, h: L.hand.y + L.hand.h - L.strip.y + 6 });
+  }
+  private rowG: Phaser.GameObjects.Graphics | null = null;
+
+  private renderRowInner(): void {
     const L = this.L;
     this.rowLayer.removeAll(true);
     const s = this.ui.s;
     const g = this.add.graphics();
+    this.rowG = g;
     this.rowLayer.add(g);
     const add = (t: Phaser.GameObjects.Text): Phaser.GameObjects.Text => { this.rowLayer.add(t); return t; };
     const f = s.forecast;
@@ -805,9 +827,11 @@ export class FirmScene extends Phaser.Scene {
       }
     });
     this.hits.grid = { ...this.gridRect() };
-    this.tweens.killTweensOf(this.placingG);
-    this.placingG.setAlpha(1);
-    if (placing) this.tweens.add({ targets: this.placingG, alpha: 0.45, duration: 520, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+    const GR = this.gridRect();
+    const img = freeze(this.placingG, { x: GR.x - 4, y: GR.y - 4, w: GR.w + 8, h: GR.h + 8 });
+    this.tweens.killTweensOf(img);
+    img.setAlpha(1);
+    if (placing) this.tweens.add({ targets: img, alpha: 0.45, duration: 520, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
   }
 
   // ---------------------------------------------------------------- action bar
@@ -870,7 +894,7 @@ export class FirmScene extends Phaser.Scene {
       const target = key === 'base' ? this.chipBox : key === 'mult' ? this.multBox : this.todayBox;
       target?.setScale(v).setRotation((1 - v) * 0.4);
     }
-    this.alarmG?.setAlpha(this.urgent ? 0.45 + 0.55 * Math.abs(Math.sin(this.clock * 3.2)) : 0);
+    this.alarmImg?.setAlpha(this.urgent ? 0.45 + 0.55 * Math.abs(Math.sin(this.clock * 3.2)) : 0);
     if (this.hot) this.hud.heat?.setScale(1 + 0.05 * Math.sin(this.clock * 6));
     this.pulse.a *= Math.pow(0.12, dt);
     this.spin += dt * (0.02 + this.pulse.a * 0.5);
@@ -1158,11 +1182,10 @@ export class FirmScene extends Phaser.Scene {
     if (i < 0) return;
     const wide = this.L.wide;
     const t = text(this, 0, 0, str, { size: (wide ? 15 : 12) * (big ? 1.3 : 1), weight: 800, color: ink }).setOrigin(0.5);
-    const w = t.width + 16, h = (wide ? 28 : 22) * (big ? 1.25 : 1);
-    const g = this.add.graphics();
-    roundRect(g, -w / 2, -h / 2 + 3, w, h, 9, 0x000000, 0.35);
-    roundRect(g, -w / 2, -h / 2, w, h, 9, fill);
-    const c = this.add.container(p.x, p.y - this.L.ch * 0.38, [g, t]).setDepth(DEPTH.fly);
+    const w = Math.ceil(t.width + 16), h = Math.round((wide ? 28 : 22) * (big ? 1.25 : 1));
+    const key = bakeShape(this, `chip:${w}x${h}:${fill}`, w, h + 3, (g) => { roundRect(g, 0, 3, w, h, 9, 0x000000, 0.35); roundRect(g, 0, 0, w, h, 9, fill); });
+    const bg = this.add.image(0, 1.5, key).setDisplaySize(w, h + 3);
+    const c = this.add.container(p.x, p.y - this.L.ch * 0.38, [bg, t]).setDepth(DEPTH.fly);
     c.setScale(0.3).setAlpha(0).setAngle((Math.random() - 0.5) * 16);
     this.tweens.add({ targets: c, scale: 1, alpha: 1, angle: 0, y: c.y - (wide ? 26 : 18), duration: 180, ease: 'Back.easeOut' });
     this.tweens.add({ targets: c, y: c.y - (wide ? 50 : 34), alpha: 0, delay: this.fast ? 200 : 560, duration: 260, ease: 'Quad.easeIn', onComplete: () => c.destroy() });

@@ -2,7 +2,7 @@ import { cardDef, displayName } from '@firm/sim';
 import type { CardInstance } from '@firm/sim';
 import { stippleCanvas } from '../stipple.ts';
 import { C, H } from './theme.ts';
-import { Spring, roundRect, strokeRect, text } from './ui.ts';
+import { Spring, bakeShape, roundRect, strokeRect, text } from './ui.ts';
 
 const SHORT: Record<string, string> = { 'Chargeback Artist': 'Chargeback', 'Copy-Trade Detector': 'Detector', 'Payout Proof Wall': 'Proof Wall', 'Compliance Officer': 'Compliance', 'Support Agent': 'Support', 'Bulk Customer': 'Bulk Buyer' };
 export const shortName = (n: string): string => SHORT[n] ?? n;
@@ -60,10 +60,11 @@ export function pill(scene: Phaser.Scene, parent: Phaser.GameObjects.Container, 
 }
 
 export class CardView extends Phaser.GameObjects.Container {
-  private shadow: Phaser.GameObjects.Graphics;
-  private face: Phaser.GameObjects.Graphics;
+  // Shapes are baked into shared textures (see bakeShape): a card is a handful of images, not live Graphics.
+  private shadow: Phaser.GameObjects.Image;
+  private face: Phaser.GameObjects.Image;
   private deco: Phaser.GameObjects.Container;
-  private glow: Phaser.GameObjects.Graphics;
+  private glow: Phaser.GameObjects.Image;
   readonly sc = new Spring(1, 1, 300, 16);
   readonly rot = new Spring(0, 0, 220, 14);
   readonly lift = new Spring(0, 0, 300, 20);
@@ -80,9 +81,9 @@ export class CardView extends Phaser.GameObjects.Container {
 
   constructor(scene: Phaser.Scene, public cw: number, public ch: number) {
     super(scene, 0, 0);
-    this.glow = scene.add.graphics();
-    this.shadow = scene.add.graphics();
-    this.face = scene.add.graphics();
+    this.glow = scene.make.image({ key: '__WHITE' }, false).setVisible(false);
+    this.shadow = scene.make.image({ key: '__WHITE' }, false).setVisible(false);
+    this.face = scene.make.image({ key: '__WHITE' }, false).setVisible(false);
     this.deco = scene.add.container(0, 0);
     this.add([this.glow, this.shadow, this.face, this.deco]);
     this.setSize(cw, ch);
@@ -102,17 +103,28 @@ export class CardView extends Phaser.GameObjects.Container {
   /** Glide to a new home (the book sliding up on phones while hiring). */
   glideTo(x: number, y: number): this { this.homeX = x; this.homeY = y; return this; }
 
+  /** Show a baked shape centred on the card, covering w x h around it. */
+  private show(img: Phaser.GameObjects.Image, key: string, w: number, h: number, dx = 0, dy = 0): void {
+    img.setTexture(key).setDisplaySize(w, h).setPosition(dx, dy).setVisible(true);
+  }
+
   setCard(card: CardInstance | null): this {
     this.card = card;
     const { cw, ch } = this;
+    const scene = this.scene;
     const big = cw > 100;
     const r = Math.max(8, cw * 0.09);
-    this.face.clear(); this.shadow.clear(); this.glow.clear();
+    const size = `${Math.round(cw)}x${Math.round(ch)}`;
     this.deco.removeAll(true);
+    this.glow.setVisible(false);
+    this.shadow.setVisible(false);
     if (!card) {
-      roundRect(this.face, -cw / 2, -ch / 2, cw, ch, r, C.paper, 0.03);
-      strokeRect(this.face, -cw / 2, -ch / 2, cw, ch, r, C.paper, 1, 0.08);
-      this.deco.add(text(this.scene, 0, 0, '+', { size: big ? 22 : 16, weight: 600, color: H.muted }).setOrigin(0.5).setAlpha(0.22));
+      const key = bakeShape(scene, `slot:${size}`, cw + 2, ch + 2, (g) => {
+        roundRect(g, 0, 0, cw, ch, r, C.paper, 0.03);
+        strokeRect(g, 0, 0, cw, ch, r, C.paper, 1, 0.08);
+      }, 1, 1);
+      this.show(this.face, key, cw + 2, ch + 2);
+      this.deco.add(text(scene, 0, 0, '+', { size: big ? 22 : 16, weight: 600, color: H.muted }).setOrigin(0.5).setAlpha(0.22));
       this.due = false;
       return this;
     }
@@ -120,54 +132,55 @@ export class CardView extends Phaser.GameObjects.Container {
     const look = cardLook(card);
     const t = def.threshold ?? 0;
     this.due = !!t && card.progress >= t;
-    // shadow, card thickness, face
-    roundRect(this.shadow, -cw / 2 + 2, -ch / 2 + (big ? 9 : 6), cw, ch, r, 0x000000, 0.45);
-    roundRect(this.face, -cw / 2, -ch / 2 + 3, cw, ch, r, C.paper3);
-    roundRect(this.face, -cw / 2, -ch / 2, cw, ch, r, C.paper);
-    // the band: what kind of card this is, and its number
     const bandH = Math.round(ch * (big ? 0.17 : 0.2));
-    this.face.fillStyle(look.band, 1);
-    this.face.fillRoundedRect(-cw / 2, -ch / 2, cw, bandH, { tl: r, tr: r, bl: 0, br: 0 });
-    this.face.fillStyle(0x000000, 0.12);
-    this.face.fillRect(-cw / 2, -ch / 2 + bandH - 2, cw, 2);
-    if (look.ring !== undefined) strokeRect(this.face, -cw / 2 + 1.5, -ch / 2 + 1.5, cw - 3, ch - 3, r - 1, look.ring, big ? 3 : 2.5);
-    if (this.due) {
-      this.glow.fillStyle(C.gold, 0.34);
-      this.glow.fillRoundedRect(-cw / 2 - 7, -ch / 2 - 7, cw + 14, ch + 14, r + 6);
-      strokeRect(this.face, -cw / 2 - 1, -ch / 2 - 1, cw + 2, ch + 2, r + 1, C.gold, 3);
-    }
-    const bs = big ? 12.5 : 9.5;
     const pad = big ? 9 : 5;
-    this.deco.add(text(this.scene, -cw / 2 + pad, -ch / 2 + bandH / 2, look.label, { size: bs * 0.78, weight: 800, color: look.ink, spacing: big ? 1.2 : 0.6 }).setOrigin(0, 0.5));
-    if (look.stat) this.deco.add(text(this.scene, cw / 2 - pad, -ch / 2 + bandH / 2, look.stat, { size: bs, weight: 800, color: look.ink }).setOrigin(1, 0.5));
+    const shadowKey = bakeShape(scene, `cshadow:${size}`, cw, ch, (g) => roundRect(g, 0, 0, cw, ch, r, 0x000000, 0.45));
+    this.show(this.shadow, shadowKey, cw, ch, 2, big ? 9 : 6);
+    if (this.due) {
+      const glowKey = bakeShape(scene, `cglow:${size}`, cw + 14, ch + 14, (g) => roundRect(g, 0, 0, cw + 14, ch + 14, r + 6, C.gold, 0.34));
+      this.show(this.glow, glowKey, cw + 14, ch + 14);
+    }
+    // the face: paper, band, ring, payout pips (one texture per distinct look)
+    const pipsOn = t ? Math.min(t, card.progress) : 0;
+    const hot = t ? card.progress / t >= 0.7 : false;
+    const faceKey = bakeShape(scene, `cface:${size}:${look.band}:${look.ring ?? '-'}:${this.due ? 1 : 0}:${t}:${pipsOn}:${hot ? 1 : 0}`, cw + 6, ch + 8, (g) => {
+      roundRect(g, 0, 3, cw, ch, r, C.paper3);
+      roundRect(g, 0, 0, cw, ch, r, C.paper);
+      g.fillStyle(look.band, 1);
+      g.fillRoundedRect(0, 0, cw, bandH, { tl: r, tr: r, bl: 0, br: 0 });
+      g.fillStyle(0x000000, 0.12);
+      g.fillRect(0, bandH - 2, cw, 2);
+      if (look.ring !== undefined) strokeRect(g, 1.5, 1.5, cw - 3, ch - 3, r - 1, look.ring, big ? 3 : 2.5);
+      if (this.due) strokeRect(g, -1, -1, cw + 2, ch + 2, r + 1, C.gold, 3);
+      if (t) {
+        const py = ch - (big ? 12 : 8), gap = big ? 3 : 2;
+        const pw = (cw - 2 * pad - gap * (t - 1)) / t, ph = big ? 6 : 4;
+        for (let k = 0; k < t; k++) {
+          const on = k < pipsOn;
+          g.fillStyle(on ? (this.due ? C.goldDeep : hot ? C.clay : C.ink) : C.ink, on ? 1 : 0.12);
+          g.fillRoundedRect(pad + k * (pw + gap), py - ph / 2, pw, ph, Math.min(2, ph / 2));
+        }
+      }
+    }, 3, 3);
+    this.show(this.face, faceKey, cw + 6, ch + 8, 0, 1);
+    const bs = big ? 12.5 : 9.5;
+    this.deco.add(text(scene, -cw / 2 + pad, -ch / 2 + bandH / 2, look.label, { size: bs * 0.78, weight: 800, color: look.ink, spacing: big ? 1.2 : 0.6 }).setOrigin(0, 0.5));
+    if (look.stat) this.deco.add(text(scene, cw / 2 - pad, -ch / 2 + bandH / 2, look.stat, { size: bs, weight: 800, color: look.ink }).setOrigin(1, 0.5));
     // art, big and central
     const top = -ch / 2 + bandH, bottom = ch / 2 - (t ? (big ? 40 : 28) : (big ? 30 : 22));
-    const size = Math.min(cw * 0.7, (bottom - top) * 0.92);
-    const art = this.scene.add.image(0, (top + bottom) / 2, artTexture(this.scene, artId(card))).setDisplaySize(size, size);
+    const artS = Math.min(cw * 0.7, (bottom - top) * 0.92);
+    const art = scene.add.image(0, (top + bottom) / 2, artTexture(scene, artId(card))).setDisplaySize(artS, artS);
     if (look.fraud) art.setTint(0x9f3a22);
     this.deco.add(art);
     // name
     const ny = ch / 2 - (t ? (big ? 30 : 21) : (big ? 17 : 12));
-    const name = text(this.scene, 0, ny, shortName(displayName(card)), { size: big ? 13.5 : 9.5, weight: 800, color: H.ink, align: 'center' }).setOrigin(0.5);
+    const name = text(scene, 0, ny, shortName(displayName(card)), { size: big ? 13.5 : 9.5, weight: 800, color: H.ink, align: 'center' }).setOrigin(0.5);
     const max = cw - 8;
     let n = name.text;
     while (name.width > max && n.length > 3) { n = n.slice(0, -1); name.setText(`${n.trimEnd()}…`); }
     this.deco.add(name);
-    // payout pips: one per point of progress
-    if (t) {
-      const g = this.scene.add.graphics();
-      const py = ch / 2 - (big ? 12 : 8), gap = big ? 3 : 2;
-      const pw = (cw - 2 * pad - gap * (t - 1)) / t, ph = big ? 6 : 4;
-      const hot = card.progress / t >= 0.7;
-      for (let k = 0; k < t; k++) {
-        const on = k < card.progress;
-        g.fillStyle(on ? (this.due ? C.goldDeep : hot ? C.clay : C.ink) : C.ink, on ? 1 : 0.12);
-        g.fillRoundedRect(-cw / 2 + pad + k * (pw + gap), py - ph / 2, pw, ph, Math.min(2, ph / 2));
-      }
-      this.deco.add(g);
-    }
-    if (this.due) pill(this.scene, this.deco, 0, -ch / 2 - (big ? 11 : 8), 'PAYOUT', C.gold, H.ink, big ? 10 : 8, 'center');
-    if (card.stalledUntil > 0 && !this.due && t && card.progress >= t) pill(this.scene, this.deco, 0, -ch / 2 - (big ? 11 : 8), 'STALLED', C.panel2, H.muted, big ? 9 : 7.5, 'center');
+    if (this.due) pill(scene, this.deco, 0, -ch / 2 - (big ? 11 : 8), 'PAYOUT', C.gold, H.ink, big ? 10 : 8, 'center');
+    if (card.stalledUntil > 0 && !this.due && t && card.progress >= t) pill(scene, this.deco, 0, -ch / 2 - (big ? 11 : 8), 'STALLED', C.panel2, H.muted, big ? 9 : 7.5, 'center');
     return this;
   }
 
@@ -195,7 +208,7 @@ export class CardView extends Phaser.GameObjects.Container {
     this.y = this.baseY + this.lift.step(dt) + bob;
     if (this.due) this.glow.setAlpha(0.55 + 0.45 * Math.sin(this.t * 4));
     this.setAlpha(this.dim ? 0.45 : 1);
-    this.shadow.setPosition(-this.lift.x * 0.12, -this.lift.x * 0.25);
+    this.shadow.setPosition(2 - this.lift.x * 0.12, (this.cw > 100 ? 9 : 6) - this.lift.x * 0.25);
   }
 }
 
