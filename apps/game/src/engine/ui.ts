@@ -5,6 +5,9 @@ import { C, FONT } from './theme.ts';
  * design to fit the window. `u()` is kept as the unit function (identity) so geometry reads clearly.
  * Text is rasterised at the camera's zoom so it stays sharp.
  */
+/** Still mode (visual regression tests): no swirl motion, sway or grain, so screenshots are repeatable. */
+export const STILL = ((): boolean => { try { return localStorage.getItem('firm:still') === '1'; } catch { return false; } })();
+
 export let TEXT_RES = 1;
 export function setTextRes(r: number): void { TEXT_RES = Math.max(1, Math.min(4, r)); }
 export const u = (v: number): number => v;

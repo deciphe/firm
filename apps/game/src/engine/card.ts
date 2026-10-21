@@ -2,7 +2,7 @@ import { cardDef, displayName } from '@firm/sim';
 import type { CardInstance } from '@firm/sim';
 import { pixelArt } from '../pixel.ts';
 import { C, H } from './theme.ts';
-import { Spring, bakeShape, roundRect, strokeRect, text } from './ui.ts';
+import { STILL, Spring, bakeShape, roundRect, strokeRect, text } from './ui.ts';
 
 const SHORT: Record<string, string> = { 'Chargeback Artist': 'Chargeback', 'Copy-Trade Detector': 'Detector', 'Payout Proof Wall': 'Proof Wall', 'Compliance Officer': 'Compliance', 'Support Agent': 'Support', 'Bulk Customer': 'Bulk Buyer' };
 export const shortName = (n: string): string => SHORT[n] ?? n;
@@ -200,7 +200,7 @@ export class CardView extends Phaser.GameObjects.Container {
   private tick(_time: number, dtMs: number): void {
     const dt = Math.min(0.05, dtMs / 1000);
     this.t += dt;
-    const live = !!this.card && this.sway;
+    const live = !!this.card && this.sway && !STILL;
     const sway = live ? Math.sin(this.t * 1.25 + this.phase) * 0.012 : 0;
     const bob = live ? Math.sin(this.t * 1.6 + this.phase) * 1.6 : 0;
     this.setScale(this.sc.step(dt));
@@ -305,8 +305,9 @@ export class PaperCard extends Phaser.GameObjects.Container {
     const dt = Math.min(0.05, dtMs / 1000);
     this.t += dt;
     this.setScale(this.sc.step(dt));
-    this.rotation = this.rot.step(dt) + (this.sway ? Math.sin(this.t * 1.1) * 0.012 : 0);
-    this.y = this.baseY + this.lift.step(dt) + (this.sway ? Math.sin(this.t * 1.4) * 2 : 0);
+    const sway = this.sway && !STILL;
+    this.rotation = this.rot.step(dt) + (sway ? Math.sin(this.t * 1.1) * 0.012 : 0);
+    this.y = this.baseY + this.lift.step(dt) + (sway ? Math.sin(this.t * 1.4) * 2 : 0);
     this.x = this.baseX;
   }
 }

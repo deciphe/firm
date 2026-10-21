@@ -75,8 +75,9 @@ You must look at what you build before calling it done.
 1. `node apps/game/build.mjs && python3 apps/game/shoot.py` opens the game at phone sizes 390x844 and
    360x640 and uses the debug hook to reach each key state: start, placing, fee pops, draft, payout, death.
 2. Take a screenshot of each state and look at it. For animations, take a sequence of frames.
-3. Keep a Playwright visual regression suite (`toHaveScreenshot`) for every key state so later changes
-   can't silently break a screen.
+3. Keep the visual regression suite green: `python apps/game/regress.py` (still mode: no swirl motion,
+   sway or grain; baselines in `design/baseline/`, diffs in `design/baseline/diff/`). After an intended
+   visual change, look at the diffs, then `--update`. `apps/game/play.py` plays the game step by step.
 4. Audit every screenshot against this list, then fix and re-shoot until it passes:
    - Matches the colour tokens at the top of `apps/game/index.template.html`.
    - Every number is tabular monospace and right-aligned; nothing jitters as it ticks.

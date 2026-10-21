@@ -1,6 +1,6 @@
 import { BG_FRAG, CrtPipeline } from './shaders.ts';
 import { C, DEPTH } from './theme.ts';
-import { setTextRes } from './ui.ts';
+import { STILL, setTextRes } from './ui.ts';
 
 export interface Rect { x: number; y: number; w: number; h: number }
 /** Fixed design space fitted to the window: 1600x900 on computers, 430-wide portrait on phones. */
@@ -31,7 +31,7 @@ export function backdrop(scene: Phaser.Scene, st: Stage, opts: { heat?: number }
   const V = st.view;
   const shader = new Phaser.Display.BaseShader('bg', BG_FRAG, undefined, {
     uPix: { type: '1f', value: st.wide ? 5 : 3.5 }, uSpin: { type: '1f', value: 0 },
-    uPulse: { type: '4f', value: { x: 0, y: 0, z: 0, w: 0 } }, uHeat: { type: '1f', value: opts.heat ?? 0 },
+    uPulse: { type: '4f', value: { x: 0, y: 0, z: 0, w: 0 } }, uHeat: { type: '1f', value: opts.heat ?? 0 }, uStill: { type: '1f', value: STILL ? 1 : 0 },
   });
   return scene.add.shader(shader, V.x - 4, V.y - 4, V.w + 8, V.h + 8).setOrigin(0).setDepth(DEPTH.bg);
 }

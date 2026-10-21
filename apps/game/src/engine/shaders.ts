@@ -1,3 +1,4 @@
+import { STILL } from './ui.ts';
 
 /**
  * The world behind the table: slow swirling ink smoke rendered as a stipple halftone, with a
@@ -16,12 +17,13 @@ uniform float uPix;
 uniform vec4 uPulse;
 uniform float uHeat;
 uniform float uSpin;
+uniform float uStill;
 varying vec2 fragCoord;
 
 void main() {
   vec2 px = floor(fragCoord / uPix) * uPix + 0.5 * uPix;
   vec2 uv = (px - 0.5 * resolution) / length(resolution) * 1.6;
-  float t = time * 0.18 + uSpin;
+  float t = time * 0.18 * (1.0 - uStill) + uSpin;
   float r = length(uv);
   float a = atan(uv.y, uv.x) - t * 0.35 + 3.0 * r * (0.55 + 0.1 * sin(t * 0.3));
   uv = vec2(cos(a), sin(a)) * r;
@@ -55,6 +57,7 @@ precision mediump float;
 uniform sampler2D uMainSampler;
 uniform vec2 uResolution;
 uniform float uTime;
+uniform float uStill;
 uniform float uDpr;
 uniform float uShake;
 varying vec2 outTexCoord;
@@ -80,7 +83,7 @@ void main() {
   col *= 1.0 - 0.055 * line;
   float v = 1.0 - dot(dir, dir) * 0.55;
   col *= v;
-  col += (hash(uv * uResolution + uTime) - 0.5) * 0.018;
+  col += (hash(uv * uResolution + uTime) - 0.5) * 0.018 * (1.0 - uStill);
   gl_FragColor = vec4(col, 1.0);
 }`;
 
@@ -95,5 +98,6 @@ export class CrtPipeline extends Phaser.Renderer.WebGL.Pipelines.PostFXPipeline 
     this.set2f('uResolution', this.renderer.width, this.renderer.height);
     this.set1f('uDpr', this.dpr);
     this.set1f('uShake', this.shake);
+    this.set1f('uStill', STILL ? 1 : 0);
   }
 }

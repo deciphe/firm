@@ -7,7 +7,7 @@ import { CardView, artTexture, cardLook } from './card.ts';
 import type { CardLook } from './card.ts';
 import { BG_FRAG, CrtPipeline } from './shaders.ts';
 import { C, DEPTH, H } from './theme.ts';
-import { Button, Num, STYLE, Spring, bakeShape, dashedRect, freeze, roundRect, setTextRes, strokeRect, text, u } from './ui.ts';
+import { Button, Num, STILL, STYLE, Spring, bakeShape, dashedRect, freeze, roundRect, setTextRes, strokeRect, text, u } from './ui.ts';
 import { PaperCard } from './card.ts';
 import { markSeen, recordRun } from './meta.ts';
 import type { RunRecord } from './meta.ts';
@@ -290,7 +290,7 @@ export class FirmScene extends Phaser.Scene {
     // backdrop fills the whole window, not just the design area
     const shader = new Phaser.Display.BaseShader('bg', BG_FRAG, undefined, {
       uPix: { type: '1f', value: wide ? 5 : 3.5 }, uSpin: { type: '1f', value: 0 },
-      uPulse: { type: '4f', value: { x: 0, y: 0, z: 0, w: 0 } }, uHeat: { type: '1f', value: 0 },
+      uPulse: { type: '4f', value: { x: 0, y: 0, z: 0, w: 0 } }, uHeat: { type: '1f', value: 0 }, uStill: { type: '1f', value: STILL ? 1 : 0 },
     });
     this.bg = this.add.shader(shader, V.x - 4, V.y - 4, V.w + 8, V.h + 8).setOrigin(0).setDepth(DEPTH.bg);
     // particles
@@ -1381,8 +1381,8 @@ export class FirmScene extends Phaser.Scene {
     const tick = (_time: number, dtMs: number): void => {
       const dt = Math.min(0.05, dtMs / 1000); t += dt;
       c.setScale(sc.step(dt));
-      c.y = y + h / 2 + lift.step(dt) + Math.sin(t * 1.4 + ph) * 1.5;
-      c.rotation = Math.sin(t * 1.1 + ph) * (landscape ? 0.004 : 0.01);
+      c.y = y + h / 2 + lift.step(dt) + (STILL ? 0 : Math.sin(t * 1.4 + ph) * 1.5);
+      c.rotation = STILL ? 0 : Math.sin(t * 1.1 + ph) * (landscape ? 0.004 : 0.01);
     };
     this.events.on('update', tick);
     c.once('destroy', () => this.events.off('update', tick));
@@ -1643,7 +1643,8 @@ export class FirmScene extends Phaser.Scene {
     const pad = 20;
     const steps: [string, string][] = [
       ['Open the market.', 'Each day prints one candle. Every customer on the book reacts and pays you fees.'],
-      ['Hire carefully.', 'One card a day, paid in cash. Staff boost the 8 cards around them and build your mult. Fees × mult = today\'s take.'],
+      ['Fees × mult.', 'Customers pay blue fees, one by one. Then staff (and Funded Vets) add clay mult. Trust sets where your mult starts. Fees × mult = today\'s take.'],
+      ['Hire carefully.', 'One card a day, paid in cash. Placing one shows what it earns in every slot. Tap any card to see what it did yesterday, or let it go.'],
       ['Trends pay them.', 'Chop days mostly pay you. Trend days fill traders\' dots. A full card wants a payout.'],
       ['Pay, stall, or deny.', 'Paying builds Trust, which multiplies every fee. Denying keeps cash but burns Trust and adds Heat. Exposed fraud can be denied for free.'],
       ['Make payroll.', 'Every 5 days, and it grows each time. Miss it and the firm closes. Heat at 100 closes it too.'],
@@ -2150,9 +2151,9 @@ export class FirmScene extends Phaser.Scene {
     force('chop');
     await this.say({ text: 'Open the market. Every day prints one candle, and every card reacts.', target: 'cta', hint: 'Tap OPEN MARKET', wait: 'tap-done', allow: ['tap'] }); if (!live()) return;
     offers([{ kind: 'card', id: 'affiliate' }, { kind: 'card', id: 'gambler' }, { kind: 'excuse', id: 'kyc' }]);
-    await this.say({ text: 'Blue is fees, clay is your multiplier. Fees times mult is what you made today.', target: 'score' }); if (!live()) return;
-    await this.say({ text: 'After every day you can hire one card, if you can afford it. Every dollar you spend is a dollar short at payroll. Take the Affiliate: staff boost the 8 cards around them.', target: 'offers', hint: 'Tap the Affiliate', wait: 'select', allow: ['select'], top: true }); if (!live()) return;
-    await this.say({ text: 'Put them next to as many Gamblers as you can. Placement is the whole game.', target: 'grid', hint: 'Tap an empty slot', wait: 'placed', allow: ['place'], top: !this.L.wide ? false : true }); if (!live()) return;
+    await this.say({ text: 'Customers pay fees: the blue box. Clay is your mult. Fees times mult is what you made today. Right now your mult is just your Trust.', target: 'score' }); if (!live()) return;
+    await this.say({ text: 'After every day you can hire one card, if you can afford it. Every dollar you spend is a dollar short at payroll. Take the Affiliate: staff add mult, and this one adds more for every Gambler beside it.', target: 'offers', hint: 'Tap the Affiliate', wait: 'select', allow: ['select'], top: true }); if (!live()) return;
+    await this.say({ text: 'Every slot now shows what the Affiliate would earn there each day. Put it where the number is biggest. Placement is the whole game.', target: 'grid', hint: 'Tap the best slot', wait: 'placed', allow: ['place'], top: !this.L.wide ? false : true }); if (!live()) return;
     this.reveal('payroll');
     await this.say({ text: 'This is payroll. Every 5 days, and it grows every time. Miss it once and the firm is dead.', target: 'payroll' }); if (!live()) return;
     this.reveal('odds');
@@ -2200,6 +2201,7 @@ export class FirmScene extends Phaser.Scene {
       openPayout: () => self.openPayout(),
       showDeath: () => self.showDeath(),
       showHow: () => self.showHow(),
+      showValuation: () => self.showValuation(),
       guideStop: () => self.guideStop(),
       valuation: () => valuation(self.ui.s),
       trustMultiplier,
