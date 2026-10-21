@@ -152,3 +152,94 @@ export const STYLE = {
   paper: { fill: C.paper, deep: C.paper3, ink: '#080809' } as ButtonStyle,
   ghost: { fill: C.ink, deep: C.ink, ink: '#d97757', stroke: C.ink } as ButtonStyle,
 };
+
+/**
+ * A number drawn with every digit in a fixed-width cell, so values never jitter as they tick (Manrope's
+ * figures are proportional). Digits that change roll in from above. Speaks the small part of the Text API
+ * the HUD uses: setText, setColor, setOrigin.
+ */
+export class Num extends Phaser.GameObjects.Container {
+  private glyphs: Phaser.GameObjects.Text[] = [];
+  private str = '';
+  private color: string;
+  private ox = 0;
+  private oy = 0;
+  private cell = 0;
+  private widths = new Map<string, number>();
+  private lineH = 0;
+
+  constructor(scene: Phaser.Scene, x: number, y: number, str: string, private o: TextOpts) {
+    super(scene, x, y);
+    this.color = o.color ?? '#eeeae2';
+    const probe = text(scene, 0, 0, '0', { ...o, spacing: 0 });
+    for (const d of '0123456789') { probe.setText(d); this.cell = Math.max(this.cell, probe.width); }
+    this.lineH = probe.height;
+    probe.destroy();
+    scene.add.existing(this);
+    this.setText(str);
+  }
+
+  private widthOf(ch: string): number {
+    if (ch >= '0' && ch <= '9') return this.cell;
+    const hit = this.widths.get(ch);
+    if (hit !== undefined) return hit;
+    const t = text(this.scene, 0, 0, ch, { ...this.o, spacing: 0 });
+    const w = ch === ' ' ? this.cell * 0.4 : t.width;
+    t.destroy();
+    this.widths.set(ch, w);
+    return w;
+  }
+
+  get text(): string { return this.str; }
+  textWidth(): number { let w = 0; for (const ch of this.str) w += this.widthOf(ch); return w; }
+
+  setText(str: string): this {
+    if (str === this.str && this.glyphs.length) return this;
+    const prev = this.str;
+    this.str = str;
+    const chars = [...str];
+    while (this.glyphs.length < chars.length) {
+      const g = text(this.scene, 0, 0, '', { ...this.o, spacing: 0 }).setOrigin(0.5, 0);
+      this.glyphs.push(g); this.add(g);
+    }
+    // align from the right so a growing number pushes left, like an order book
+    const pc = [...prev];
+    chars.forEach((ch, i) => {
+      const g = this.glyphs[i] as Phaser.GameObjects.Text;
+      const fromEnd = chars.length - 1 - i;
+      const was = pc[pc.length - 1 - fromEnd];
+      g.setVisible(true).setColor(this.color);
+      if (g.text !== ch) g.setText(ch);
+      if (prev && was !== ch && ch >= '0' && ch <= '9' && this.scene) {
+        this.scene.tweens.killTweensOf(g);
+        g.setAlpha(0.35);
+        g.y = -this.lineH * 0.22;
+        this.scene.tweens.add({ targets: g, y: 0, alpha: 1, duration: 90, ease: 'Quad.easeOut' });
+      }
+    });
+    for (let i = chars.length; i < this.glyphs.length; i++) this.glyphs[i]?.setVisible(false);
+    this.layout();
+    return this;
+  }
+
+  setColor(c: string): this {
+    this.color = c;
+    for (const g of this.glyphs) g.setColor(c);
+    return this;
+  }
+
+  setOrigin(x: number, y = x): this { this.ox = x; this.oy = y; this.layout(); return this; }
+
+  private layout(): void {
+    const chars = [...this.str];
+    const total = chars.reduce((t, ch) => t + this.widthOf(ch), 0);
+    let x = -total * this.ox;
+    chars.forEach((ch, i) => {
+      const w = this.widthOf(ch);
+      const g = this.glyphs[i];
+      if (g) { g.x = x + w / 2; if (!this.scene?.tweens.isTweening(g)) g.y = 0; }
+      x += w;
+    });
+    this.list.forEach((g) => { (g as Phaser.GameObjects.Text).setOrigin(0.5, this.oy); });
+  }
+}

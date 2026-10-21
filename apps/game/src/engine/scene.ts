@@ -7,7 +7,7 @@ import { CardView, artTexture, cardLook } from './card.ts';
 import type { CardLook } from './card.ts';
 import { BG_FRAG, CrtPipeline } from './shaders.ts';
 import { C, DEPTH, H } from './theme.ts';
-import { Button, STYLE, Spring, dashedRect, roundRect, setTextRes, strokeRect, text, u } from './ui.ts';
+import { Button, Num, STYLE, Spring, dashedRect, roundRect, setTextRes, strokeRect, text, u } from './ui.ts';
 import { PaperCard } from './card.ts';
 import { markSeen, recordRun } from './meta.ts';
 import type { RunRecord } from './meta.ts';
@@ -24,6 +24,8 @@ export interface UiState {
   founder: string; stake: number; ledger: Ledger; record: RunRecord | null; cashout: { ledger: Ledger; paid: number; cycle: number; crisis: string | null } | null;
 }
 const ALL_REVEALS = ['payroll', 'odds', 'trust', 'hand'];
+/** HUD labels that hold ticking numbers. */
+const NUMERIC = new Set(['payAmt', 'cash', 'trust', 'heat', 'val', 'peak', 'rr', 'book']);
 
 const money = (n: number): string => `${n < 0 ? '-' : ''}$${Math.abs(Math.round(n)).toLocaleString('en-US')}`;
 const signed = (n: number): string => `${n >= 0 ? '+' : '-'}$${Math.abs(Math.round(n)).toLocaleString('en-US')}`;
@@ -129,7 +131,7 @@ export class FirmScene extends Phaser.Scene {
   private spin = 0;
   private clock = 0;
   private cards: CardView[] = [];
-  private hud: Record<string, Phaser.GameObjects.Text> = {};
+  private hud: Record<string, Phaser.GameObjects.Text | Num> = {};
   private hudG!: Phaser.GameObjects.Graphics;
   private hudDyn!: Phaser.GameObjects.Graphics;
   private alarmG!: Phaser.GameObjects.Graphics;
@@ -308,8 +310,9 @@ export class FirmScene extends Phaser.Scene {
     strokeRect(g, x, y, w, h, r, stroke, 1);
   }
 
-  private label(name: string, x: number, y: number, str: string, o: Parameters<typeof text>[4], reveal?: string): Phaser.GameObjects.Text {
-    const t = text(this, x, y, str, o).setDepth(DEPTH.hud + 1);
+  private label(name: string, x: number, y: number, str: string, o: Parameters<typeof text>[4], reveal?: string): Phaser.GameObjects.Text | Num {
+    // money and meters tick, so they get fixed-width digits
+    const t = NUMERIC.has(name) ? new Num(this, x, y, str, o).setDepth(DEPTH.hud + 1) : text(this, x, y, str, o).setDepth(DEPTH.hud + 1);
     this.hud[name] = t;
     if (reveal) (this.veiled[reveal] ??= []).push(t);
     return t;
@@ -321,7 +324,7 @@ export class FirmScene extends Phaser.Scene {
     const g = this.add.graphics();
     roundRect(g, -w / 2, -h / 2 + 2, w, h, 8, deep);
     roundRect(g, -w / 2, -h / 2, w, h - 1, 8, fill);
-    const v = text(this, 0, -1, '0', { size, weight: 800, color: ink }).setOrigin(0.5);
+    const v = new Num(this, 0, -1, '0', { size, weight: 800, color: ink }).setOrigin(0.5);
     c.add([g, v]);
     this.hud[key] = v;
     this.boxSprings[key] = new Spring(1, 1, 380, 16);
@@ -394,7 +397,7 @@ export class FirmScene extends Phaser.Scene {
     this.label('times', x0 + 16 + 70 + 12, y + 53, '×', { size: 16, weight: 800, color: H.muted }).setOrigin(0.5);
     this.multBox = this.scorePill(x0 + 16 + 70 + 24, y + 38, 70, 30, C.clay, C.clayDeep, H.clayInk, 'mult', 15);
     this.todayBox = this.add.container(x0 + w - 16, y + 50).setDepth(DEPTH.hud + 1);
-    const tv = text(this, 0, 0, '+$0', { size: 32, weight: 800 }).setOrigin(1, 0.5);
+    const tv = new Num(this, 0, 0, '+$0', { size: 32, weight: 800 }).setOrigin(1, 0.5);
     this.todayBox.add(tv); this.hud.today = tv; this.boxSprings.today = new Spring(1, 1, 380, 16);
     this.hits.score = { x: x0, y, w, h: th };
     y += th + 14;
@@ -467,7 +470,7 @@ export class FirmScene extends Phaser.Scene {
     this.label('times', S.x + 8 + 56 + 8, S.y + 20, '×', { size: 13, weight: 800, color: H.muted }).setOrigin(0.5);
     this.multBox = this.scorePill(S.x + 8 + 56 + 16, S.y + 8, 56, 24, C.clay, C.clayDeep, H.clayInk, 'mult', 13);
     this.todayBox = this.add.container(S.x + 146, S.y + 20).setDepth(DEPTH.hud + 1);
-    const tv = text(this, 0, 0, '+$0', { size: 20, weight: 800 }).setOrigin(0, 0.5);
+    const tv = new Num(this, 0, 0, '+$0', { size: 20, weight: 800 }).setOrigin(0, 0.5);
     this.todayBox.add(tv); this.hud.today = tv; this.boxSprings.today = new Spring(1, 1, 380, 16);
     this.hits.score = { x: S.x, y: S.y, w: 230, h: S.h };
   }
@@ -528,7 +531,7 @@ export class FirmScene extends Phaser.Scene {
     }
     this.hud.trust?.setText(s.trust.toFixed(1)).setColor(s.trust < 1.5 ? H.clay : H.paper);
     this.hud.heat?.setText(String(Math.round(s.heat))).setColor(s.heat >= 60 ? H.clay : H.paper);
-    this.hud.trustFx?.setText(`FEES ×${trustMultiplier(s.trust).toFixed(2)}`).setColor(s.trust < 1.5 ? H.clay : H.plat);
+    this.hud.trustFx?.setText(`MULT ×${trustMultiplier(s.trust).toFixed(2)}`).setColor(s.trust < 1.5 ? H.clay : H.plat);
     const hw = heatWord(s.heat);
     this.hud.heatFx?.setText(hw.word).setColor(hw.color);
     // alarm ring around payroll when it can't be covered
@@ -1150,7 +1153,7 @@ export class FirmScene extends Phaser.Scene {
     const g = this.add.graphics();
     roundRect(g, -w / 2, -h / 2 + 3, w, h, 9, 0x000000, 0.35);
     roundRect(g, -w / 2, -h / 2, w, h, 9, fill);
-    const c = this.add.container(p.x, p.y - this.L.ch * 0.18, [g, t]).setDepth(DEPTH.fly);
+    const c = this.add.container(p.x, p.y - this.L.ch * 0.38, [g, t]).setDepth(DEPTH.fly);
     c.setScale(0.3).setAlpha(0).setAngle((Math.random() - 0.5) * 16);
     this.tweens.add({ targets: c, scale: 1, alpha: 1, angle: 0, y: c.y - (wide ? 26 : 18), duration: 180, ease: 'Back.easeOut' });
     this.tweens.add({ targets: c, y: c.y - (wide ? 50 : 34), alpha: 0, delay: this.fast ? 200 : 560, duration: 260, ease: 'Quad.easeIn', onComplete: () => c.destroy() });
