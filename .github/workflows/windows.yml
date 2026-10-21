@@ -61,7 +61,7 @@ jobs:
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           git checkout --orphan windows-dist
-          git rm -r -q --cached .
+          git rm -r -q --cached -f .
           echo "${GITHUB_SHA} ${{ steps.build.outcome }}" > STATUS.txt
           git add -f STATUS.txt build.log
           [ -f FIRM.exe ] && git add -f FIRM.exe
