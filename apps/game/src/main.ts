@@ -10,6 +10,17 @@ function readStore<T>(key: string): T | null {
   try { const raw = localStorage.getItem(`firm:${key}`); return raw ? (JSON.parse(raw) as T) : null; } catch { return null; }
 }
 
+interface TauriWindow { isFullscreen(): Promise<boolean>; setFullscreen(on: boolean): Promise<void> }
+async function toggleFullscreen(): Promise<void> {
+  const tauri = (window as unknown as { __TAURI__?: { window?: { getCurrentWindow(): TauriWindow } } }).__TAURI__;
+  try {
+    const w = tauri?.window?.getCurrentWindow();
+    if (w) { await w.setFullscreen(!(await w.isFullscreen())); return; }
+    if (document.fullscreenElement) await document.exitFullscreen();
+    else await document.documentElement.requestFullscreen();
+  } catch { /* fullscreen is a nicety */ }
+}
+
 async function boot(data: { ui?: UiState }): Promise<void> {
   J.setMuted(readStore<boolean>('muted') ?? false);
   try {
@@ -69,6 +80,12 @@ async function boot(data: { ui?: UiState }): Promise<void> {
   const hot = (window as unknown as { claude?: { hot?: Hot } }).claude?.hot;
   hot?.snapshot?.(() => ({ ui: scene()?.ui }));
   window.addEventListener('pointerdown', () => J.unlockAudio(), { once: true });
+  // F11 / Alt+Enter: fullscreen (the Windows app through Tauri's window API, browsers through the page)
+  window.addEventListener('keydown', (e) => {
+    if (e.key !== 'F11' && !(e.key === 'Enter' && e.altKey)) return;
+    e.preventDefault();
+    void toggleFullscreen();
+  });
 }
 
 const hot = (window as unknown as { claude?: { hot?: Hot } }).claude?.hot;

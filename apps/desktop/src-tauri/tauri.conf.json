@@ -1,14 +1,35 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "FIRM",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "identifier": "com.deciphe.firm",
-  "build": { "frontendDist": "../web" },
+  "build": {
+    "frontendDist": "../web"
+  },
   "app": {
     "windows": [
-      { "title": "FIRM", "width": 1600, "height": 900, "minWidth": 960, "minHeight": 600, "center": true, "maximized": true, "resizable": true }
+      {
+        "title": "FIRM",
+        "width": 1600,
+        "height": 900,
+        "minWidth": 960,
+        "minHeight": 600,
+        "center": true,
+        "maximized": true,
+        "resizable": true,
+        "label": "main"
+      }
     ],
-    "security": { "csp": null }
+    "security": {
+      "csp": null
+    },
+    "withGlobalTauri": true
   },
-  "bundle": { "active": false, "icon": ["icons/icon.ico", "icons/icon.png"] }
+  "bundle": {
+    "active": false,
+    "icon": [
+      "icons/icon.ico",
+      "icons/icon.png"
+    ]
+  }
 }
