@@ -1,5 +1,5 @@
 # Builds FIRM.exe on a Windows machine every push to main, publishes it as the
-# "windows-latest" release, and mirrors it to the windows-dist branch.
+# "windows-latest" release, and mirrors it (plus the build log) to the windows-dist branch.
 name: Windows build
 
 on:
@@ -22,7 +22,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -30,31 +30,40 @@ jobs:
         with:
           workspaces: apps/desktop/src-tauri
 
-      - name: Build the offline game page
+      - name: Build FIRM.exe
+        id: build
         shell: bash
         run: |
-          mkdir -p .ci && cd .ci && npm init -y >/dev/null && npm install --no-audit --no-fund esbuild@0.24.0 @fontsource/manrope@5 && cd ..
-          cp -r .ci/node_modules ./node_modules
-          node apps/game/build.mjs --desktop
-
-      - name: Build FIRM.exe
-        working-directory: apps/desktop
-        shell: bash
-        run: npx --yes @tauri-apps/cli@2 build --no-bundle
+          set -o pipefail
+          {
+            set -ex
+            node --version
+            npm install --no-save --no-audit --no-fund --no-package-lock esbuild@0.24.0 @fontsource/manrope@5
+            node apps/game/build.mjs --desktop
+            ls -la apps/desktop/web
+            cd apps/desktop
+            npx --yes @tauri-apps/cli@2 build --no-bundle
+            cd ../..
+            cp apps/desktop/src-tauri/target/release/firm.exe FIRM.exe
+            ls -la FIRM.exe
+          } 2>&1 | tee build.log
 
       - name: Publish
+        if: always()
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cp apps/desktop/src-tauri/target/release/firm.exe FIRM.exe
-          ls -la FIRM.exe
-          gh release delete windows-latest --yes --cleanup-tag || true
-          gh release create windows-latest FIRM.exe --title "FIRM for Windows (latest build)" --notes "Built from ${GITHUB_SHA}. Download FIRM.exe and run it." --prerelease
+          if [ -f FIRM.exe ]; then
+            gh release delete windows-latest --yes --cleanup-tag || true
+            gh release create windows-latest FIRM.exe --title "FIRM for Windows (latest build)" --notes "Built from ${GITHUB_SHA}. Download FIRM.exe and run it." --prerelease || true
+          fi
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           git checkout --orphan windows-dist
           git rm -r -q --cached .
-          git add -f FIRM.exe
-          git commit -q -m "FIRM.exe from ${GITHUB_SHA}"
+          echo "${GITHUB_SHA} ${{ steps.build.outcome }}" > STATUS.txt
+          git add -f STATUS.txt build.log
+          [ -f FIRM.exe ] && git add -f FIRM.exe
+          git commit -q -m "Windows build ${{ steps.build.outcome }} for ${GITHUB_SHA}"
           git push -f origin windows-dist
