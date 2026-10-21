@@ -1,0 +1,14 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "FIRM",
+  "version": "0.1.0",
+  "identifier": "com.deciphe.firm",
+  "build": { "frontendDist": "../web" },
+  "app": {
+    "windows": [
+      { "title": "FIRM", "width": 1600, "height": 900, "minWidth": 960, "minHeight": 600, "center": true, "maximized": true, "resizable": true }
+    ],
+    "security": { "csp": null }
+  },
+  "bundle": { "active": false, "icon": ["icons/icon.ico", "icons/icon.png"] }
+}

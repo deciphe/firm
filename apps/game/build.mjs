@@ -25,3 +25,25 @@ writeFileSync(resolve(here, 'dist/firm.html'), body);
 writeFileSync(resolve(here, 'dist/dev.html'),
   `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"></head><body>${devBody}</body></html>`);
 console.log(`built dist/firm.html (${(body.length / 1024).toFixed(1)} KB)`);
+
+// --desktop: a fully offline page for the Windows app (Phaser and Manrope inlined, no network).
+if (process.argv.includes('--desktop')) {
+  const phaser = readFileSync(resolve(here, 'vendor/phaser-3.90.0.min.js'), 'utf8').replace(/<\/script/gi, '<\\/script');
+  let fonts = '';
+  try {
+    const dir = dirname(require.resolve('@fontsource/manrope/package.json'));
+    for (const w of [500, 600, 700, 800]) {
+      const b64 = readFileSync(resolve(dir, `files/manrope-latin-${w}-normal.woff2`)).toString('base64');
+      fonts += `@font-face{font-family:Manrope;font-style:normal;font-weight:${w};font-display:block;src:url(data:font/woff2;base64,${b64}) format('woff2')}`;
+    }
+  } catch { console.warn('Manrope not installed; desktop page falls back to system fonts'); }
+  const offline = template
+    .replace(/<link[^>]+fonts\.(googleapis|gstatic)[^>]*>\n?/g, '')
+    .replace('<style>', `<style>${fonts}`)
+    .replace('<script src="/*__PHASER__*/"></script>', () => `<script>${phaser}</script>`)
+    .replace('/*__BUNDLE__*/', () => js);
+  const out = resolve(here, '../desktop/web');
+  mkdirSync(out, { recursive: true });
+  writeFileSync(resolve(out, 'index.html'), `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body>${offline}</body></html>`);
+  console.log(`built desktop/web/index.html (${(offline.length / 1024).toFixed(0)} KB, fonts ${fonts ? 'inlined' : 'system'})`);
+}
