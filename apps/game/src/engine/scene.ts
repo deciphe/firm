@@ -1,9 +1,10 @@
 import {
-  BALANCE, CARDS, CRISES, EXCUSES, FOUNDERS, PLANS, STAKES, cardDef, displayName, excuseDef, findCard, legalActions, newRun, offerPrice, payrollGrowth, planCost, rerollPrice, seedFromString, step, trustMultiplier, valuation,
+  BALANCE, CARDS, CRISES, EXCUSES, FOUNDERS, PLANS, STAKES, cardDef, displayName, excuseDef, expectedTake, findCard, legalActions, newRun, offerPrice, payrollGrowth, planCost, previewPlacement, rerollPrice, seedFromString, step, trustMultiplier, valuation,
 } from '@firm/sim';
 import type { Action, Candle, CardInstance, GameState, Offer } from '@firm/sim';
 import * as J from '../juice.ts';
-import { CardView, artTexture, shortName } from './card.ts';
+import { CardView, artTexture, cardLook } from './card.ts';
+import type { CardLook } from './card.ts';
 import { BG_FRAG, CrtPipeline } from './shaders.ts';
 import { C, DEPTH, H } from './theme.ts';
 import { Button, STYLE, Spring, dashedRect, roundRect, setTextRes, strokeRect, text, u } from './ui.ts';
@@ -75,6 +76,13 @@ function offerTag(o: Offer): string {
   if (def.disguise) return 'CUSTOMER';
   return `${def.rarity === 'rare' ? 'RARE ' : ''}${def.kind === 'staff' ? 'STAFF' : 'CUSTOMER'}`;
 }
+/** The band on a shop card, matching the card it becomes on the book. */
+function offerLook(o: Offer): CardLook {
+  if (o.kind === 'excuse') return { band: C.clayDeep, ink: H.paper, label: 'EXCUSE', stat: '', fraud: false };
+  const def = cardDef(o.id);
+  if (o.id === 'botfarm') return { band: C.chip, ink: H.chipInk, label: 'BULK ORDER', stat: '×3', fraud: false };
+  return cardLook({ uid: -1, def: def.disguise ? 'retail' : o.id, progress: 0, age: 0, revealed: true, payouts: 0, stalls: 0, stalledUntil: 0, bonus: 0 });
+}
 const offerRarity = (o: Offer): string => (o.kind === 'excuse' ? 'excuse' : cardDef(o.id).disguise ? 'common' : cardDef(o.id).rarity);
 function infoBody(card: CardInstance): string {
   const def = cardDef(card.def);
@@ -100,6 +108,10 @@ interface Layout {
   W: number; H: number; wide: boolean; k: number; fit: number; view: Rect;
   panel: Rect; side: Rect | null; center: Rect; strip: Rect; hand: Rect;
   grid: Rect; cw: number; ch: number; gap: number; cta: Rect; moves: Rect | null;
+  /** Where the hiring floor goes (desktop: the right column; phone: below the raised book). */
+  shopPanel: Rect;
+  /** Phone only: the book while hiring, raised under a compact bar. */
+  gridDraft: Rect | null;
 }
 interface Gauge { x: number; y: number; w: number; h: number; arc: boolean }
 
@@ -180,6 +192,7 @@ export class FirmScene extends Phaser.Scene {
     fadeIn(this);
     this.input.keyboard?.on('keydown-SPACE', (e: KeyboardEvent) => { e.preventDefault(); this.onSpace(); });
     this.input.keyboard?.on('keydown-ENTER', () => this.onSpace());
+    this.input.on('pointerdown', () => { if (this.busy && !this.overlay) this.fast = true; });
     this.build();
     if (this.ui.mode === 'tutorial' && !restored) void this.tutorial();
     else if (this.ui.s.phase === 'payout') this.openPayout();
@@ -243,7 +256,7 @@ export class FirmScene extends Phaser.Scene {
       const gy = strip.y + strip.h + 18;
       const { grid, cw, ch } = fitGrid({ x: 420, y: gy, w: 760, h: cta.y - 20 - gy }, gap, 1.28);
       const hand = { x: side.x + 20, y: side.y + 20, w: side.w - 40, h: 300 };
-      return { W, H: Hh, wide, k, fit, view, panel, side, center, strip, hand, grid, cw, ch, gap, cta, moves };
+      return { W, H: Hh, wide, k, fit, view, panel, side, center, strip, hand, grid, cw, ch, gap, cta, moves, shopPanel: { ...side }, gridDraft: null };
     }
     const mx = 14, w = W - 2 * mx;
     const panel = { x: mx, y: 12, w, h: 246 };
@@ -255,7 +268,10 @@ export class FirmScene extends Phaser.Scene {
     const gap = 6;
     const gy = 352, gb = (moves ? moves.y : cta.y) - 12;
     const { grid, cw, ch } = fitGrid({ x: mx, y: gy, w, h: gb - gy }, gap, 1.34);
-    return { W, H: Hh, wide, k, fit, view, panel, side: null, center: { x: 0, y: 0, w: W, h: Hh }, strip, hand, grid, cw, ch, gap, cta, moves };
+    const gridDraft = { ...grid, y: 112 };
+    const sy = gridDraft.y + gridDraft.h + 10;
+    const shopPanel = { x: 0, y: sy, w: W, h: Hh - sy };
+    return { W, H: Hh, wide, k, fit, view, panel, side: null, center: { x: 0, y: 0, w: W, h: Hh }, strip, hand, grid, cw, ch, gap, cta, moves, shopPanel, gridDraft };
   }
 
   private build(): void {
@@ -527,6 +543,35 @@ export class FirmScene extends Phaser.Scene {
     this.hud.book?.setText(`${s.grid.filter(Boolean).length}/20`);
     this.bg?.setUniform('uHeat.value', s.heat / 100);
     for (const [key, objs] of Object.entries(this.veiled)) objs.forEach((o) => (o as unknown as Phaser.GameObjects.Components.Visible).setVisible(this.ui.revealed.includes(key)));
+    this.applyCompact();
+  }
+
+  /** Phone hiring mode: everything above the book folds into one bar (cash, payroll, days). */
+  private applyCompact(): void {
+    if (this.L.wide) return;
+    const on = this.compact();
+    const keep = new Set(['mark', 'firm']);
+    const fullHud: { setVisible: (v: boolean) => unknown }[] = [this.hudG, this.hudDyn, this.alarmG, this.rowLayer, this.chipBox, this.multBox, this.todayBox];
+    for (const o of fullHud) o?.setVisible(!on);
+    if (on) for (const objs of Object.values(this.veiled)) objs.forEach((o) => (o as unknown as Phaser.GameObjects.Components.Visible).setVisible(false));
+    for (const [k, t] of Object.entries(this.hud)) if (!keep.has(k) && !t.parentContainer) t.setVisible(on ? false : t.visible);
+    if (!on) for (const [key, objs] of Object.entries(this.veiled)) objs.forEach((o) => (o as unknown as Phaser.GameObjects.Components.Visible).setVisible(this.ui.revealed.includes(key)));
+    if (!on) { for (const [k, t] of Object.entries(this.hud)) if (!keep.has(k) && !t.parentContainer && !Object.values(this.veiled).some((l) => l.includes(t))) t.setVisible(true); }
+    this.compactBar?.destroy(); this.compactBar = null;
+    if (!on) return;
+    const s = this.ui.s;
+    const x0 = this.L.panel.x, w = this.L.panel.w, y = 54, h = 48;
+    const c = this.add.container(0, 0).setDepth(DEPTH.hud + 1);
+    const g = this.add.graphics();
+    roundRect(g, x0, y, w, h, 12, 0x18120f, 0.96);
+    strokeRect(g, x0, y, w, h, 12, 0x3d2a21, 1);
+    const due = this.payrollDue(), days = s.payroll.dueDay - s.day;
+    c.add([g,
+      text(this, x0 + 14, y + h / 2, 'CASH', { size: 9.5, weight: 800, color: H.muted, spacing: 1.4 }).setOrigin(0, 0.5),
+      text(this, x0 + 56, y + h / 2, money(s.cash), { size: 20, weight: 800, color: H.gold }).setOrigin(0, 0.5),
+      text(this, x0 + w - 14, y + h / 2, `PAYROLL ${money(due)} · ${days <= 0 ? 'TONIGHT' : `${days}D`}`, { size: 11, weight: 800, color: s.cash < due ? H.clay : H.paper, spacing: 0.8 }).setOrigin(1, 0.5),
+    ]);
+    this.compactBar = c;
   }
 
   /** Arc gauge (desktop) or bar gauge (phone). */
@@ -622,6 +667,7 @@ export class FirmScene extends Phaser.Scene {
         oddsBar(bx, S.y + 30, bw, 8);
         let lx = bx;
         odds.forEach(([c, p]) => {
+          if (p < 0.005 || lx > bx + bw - 30) return;
           const t = add(text(this, lx, S.y + 44, `${CANDLE[c] === 'TREND UP' ? 'UP' : CANDLE[c] === 'TREND DOWN' ? 'DN' : CANDLE[c]} ${Math.round(p * 100)}`, { size: 10.5, weight: 800, color: c === 'down' ? H.clay : c === 'news' ? H.gold : c === 'chop' ? H.muted : H.paper, spacing: 0.6 }));
           lx += Math.max(bw * p, t.width + 10);
         });
@@ -701,8 +747,11 @@ export class FirmScene extends Phaser.Scene {
 
   // ---------------------------------------------------------------- grid
 
+  private gridRect(): Rect { return this.compact() && this.L.gridDraft ? this.L.gridDraft : this.L.grid; }
+
   private slotPos(i: number): { x: number; y: number } {
-    const { grid: G, cw, ch, gap } = this.L;
+    const { cw, ch, gap } = this.L;
+    const G = this.gridRect();
     const c = i % 5, r = Math.floor(i / 5);
     return { x: G.x + c * (cw + gap) + cw / 2, y: G.y + r * (ch + gap) + ch / 2 };
   }
@@ -722,6 +771,8 @@ export class FirmScene extends Phaser.Scene {
     this.placingG = this.add.graphics().setDepth(DEPTH.cards - 1);
   }
   private placingG!: Phaser.GameObjects.Graphics;
+  private previewG: Phaser.GameObjects.Container | null = null;
+  private compactBar: Phaser.GameObjects.Container | null = null;
 
   private renderGrid(): void {
     const s = this.ui.s;
@@ -730,6 +781,9 @@ export class FirmScene extends Phaser.Scene {
     s.grid.forEach((c, i) => {
       const cv = this.cards[i];
       if (!cv) return;
+      const p = this.slotPos(i);
+      cv.glideTo(p.x, p.y);
+      this.hits[`slot${i}`] = { x: p.x - this.L.cw / 2, y: p.y - this.L.ch / 2, w: this.L.cw, h: this.L.ch };
       cv.setCard(c);
       cv.dim = placing && !!c;
       if (placing && !c) {
@@ -738,6 +792,7 @@ export class FirmScene extends Phaser.Scene {
         dashedRect(this.placingG, p.x - this.L.cw / 2, p.y - this.L.ch / 2, this.L.cw, this.L.ch, 10, C.gold, 0.9);
       }
     });
+    this.hits.grid = { ...this.gridRect() };
     this.tweens.killTweensOf(this.placingG);
     this.placingG.setAlpha(1);
     if (placing) this.tweens.add({ targets: this.placingG, alpha: 0.45, duration: 520, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
@@ -758,7 +813,7 @@ export class FirmScene extends Phaser.Scene {
       const r1 = wide ? { x: M.x, y: M.y, w: 150, h: M.h } : { x: M.x, y: M.y, w: (M.w - 8) / 2, h: M.h };
       const r2 = wide ? { x: M.x + M.w - 150, y: M.y, w: 150, h: M.h } : { x: M.x + (M.w + 8) / 2, y: M.y, w: (M.w - 8) / 2, h: M.h };
       const mv = { fill: C.panel, deep: 0x050506, ink: H.gold, stroke: C.goldDeep, size: 12 };
-      const sale = new Button(this, r1.x, r1.y, r1.w, r1.h, 'FLASH SALE', { ...mv, sub: `+${money(100 + 100 * s.payroll.cycle)} · −Trust` }).setDepth(DEPTH.hud + 2);
+      const sale = new Button(this, r1.x, r1.y, r1.w, r1.h, 'FLASH SALE', { ...mv, sub: `+${money(Math.round((BALANCE.flashBase + BALANCE.flashStep * s.payroll.cycle) * (s.founder === 'hustler' ? 1.5 : 1)))} · −Trust` }).setDepth(DEPTH.hud + 2);
       sale.setEnabled(legal.some((a) => a.type === 'flashSale'));
       sale.onClick = () => { if (this.gate('sale')) this.act({ type: 'flashSale' }, 'Flash sale. Cash in, strangers in.'); };
       const loan = new Button(this, r2.x, r2.y, r2.w, r2.h, 'FOUNDER LOAN', { ...mv, sub: `+${money(s.payroll.amount)} · owe ${money(Math.round(s.payroll.amount * 1.6))}` }).setDepth(DEPTH.hud + 2);
@@ -927,6 +982,7 @@ export class FirmScene extends Phaser.Scene {
   }
 
   private onSpace(): void {
+    if (this.busy) { this.fast = true; return; }
     if (this.overlayKind === 'death') { this.newGame('random'); return; }
     if (this.ui.s.phase === 'morning' && !this.overlay && !this.guideNow) void this.onTap();
   }
@@ -937,6 +993,7 @@ export class FirmScene extends Phaser.Scene {
     if (this.busy || this.ui.s.phase !== 'morning' || !this.gate('tap')) return;
     J.unlockAudio();
     this.busy = true;
+    this.fast = false;
     this.hideGuide();
     this.hideTip();
     this.cta.setEnabled(false);
@@ -945,46 +1002,72 @@ export class FirmScene extends Phaser.Scene {
     const report = next.lastReport;
     if (!report) { this.busy = false; return; }
 
-    await this.revealCandle(report.candle);
+    const banner = await this.printCandle(report.candle);
 
-    const sc: Score = { base: 0, mult: 1, today: 0 };
+    // The Balatro count: every fee lands, then every mult fires. Both boxes really build.
+    const sc: Score = { base: 0, mult: report.baseMult, today: 0 };
     this.ui.score = sc;
     this.setScore(sc);
-    let pos = 0, neg = 0, k = 0;
-    const order = prev.grid.map((c, i) => ({ c, i })).filter((x): x is { c: CardInstance; i: number } => x.c !== null);
-    for (const { c, i } of order) {
-      const r = report.results.find((x) => x.uid === c.uid);
-      if (!r || r.cash === 0) continue;
-      if (r.cash > 0) { sc.base += r.base > 0 ? r.base : r.cash; pos += r.cash; sc.mult = sc.base ? pos / sc.base : 1; }
-      else neg += r.cash;
-      sc.today = pos + neg;
+    const slotOf = (uid: number): number => prev.grid.findIndex((c) => c?.uid === uid);
+    const feeEvents = report.events.filter((e) => e.fees !== undefined);
+    const multEvents = report.events.filter((e) => e.fees === undefined);
+    let k = 0;
+    for (const e of feeEvents) {
+      const i = slotOf(e.uid);
+      sc.base = e.totalFees;
+      sc.today = Math.round(sc.base * sc.mult);
       this.setScore(sc);
-      this.bump('base');
-      const boosted = r.cash > 0 && r.base > 0 && r.cash !== r.base;
-      if (boosted) this.bump('mult', 1.3);
-      this.cards[i]?.pop(boosted ? 1.2 : 1);
-      this.flyChips(i, r.cash, r.base);
-      if (r.cash > 0) { J.coin(k); J.buzz(6); } else { J.loss(); J.buzz([20, 30, 20]); }
+      const fee = e.fees ?? 0;
+      if (fee > 0) {
+        this.bump('base', 0.7);
+        this.cards[i]?.pop(0.8);
+        this.chip(i, `+${fee}`, C.chip, H.chipInk);
+        J.chip(k, feeEvents.length);
+      } else {
+        this.cards[i]?.pop(1.2);
+        this.chip(i, `−$${Math.abs(fee)}`, C.ink, H.clay);
+        J.loss(); J.buzz([20, 30, 20]); this.shake(0.15);
+      }
       k++;
-      await J.wait(Math.max(80, 210 - k * 11));
+      await this.beat(Math.max(55, 150 - k * 9));
     }
+    if (multEvents.length) await this.beat(140);
+    let m = 0;
+    for (const e of multEvents) {
+      const i = slotOf(e.uid);
+      sc.mult = e.mult;
+      sc.today = Math.round(sc.base * sc.mult);
+      this.setScore(sc);
+      const times = e.times !== undefined;
+      this.bump('mult', times ? 1.5 : 1);
+      this.cards[i]?.pop(times ? 1.5 : 1.1);
+      this.chip(i, times ? `×${e.times}` : `+${e.add} Mult`, C.clay, H.clayInk, times);
+      J.mult(m, times);
+      if (times) { this.shake(0.25); this.pulseBg(C.clay, 0.5); }
+      m++;
+      await this.beat(times ? 300 : Math.max(110, 230 - m * 15));
+    }
+    // fees x mult: slam the total
+    await this.beat(120);
     sc.today = report.income;
     this.setScore(sc);
     this.bump('today', 1.6);
-    const record = report.income > this.ui.bestIncome && prev.day > 2;
+    const record = report.income > this.ui.bestIncome && prev.day > 3;
     if (report.income > this.ui.bestIncome) this.ui.bestIncome = report.income;
     this.ui.tape.push(report.candle);
-    const scale = Math.min(1, Math.abs(report.income) / Math.max(200, prev.payroll.amount * 0.6));
-    this.shake(scale * 0.7);
+    const scale = Math.min(1, Math.abs(report.income) / Math.max(200, prev.payroll.amount * 0.5));
+    J.total(scale, report.income < 0);
+    this.shake(0.15 + scale * 0.6);
     this.pulseBg(report.income >= 0 ? C.gold : C.clay, 0.3 + scale);
     if (record) {
       this.fire?.start();
       J.fanfare();
-      this.time.delayedCall(2600, () => this.fire?.stop());
-      this.toast('New record day');
+      this.time.delayedCall(2400, () => this.fire?.stop());
+      this.toast('Record day');
     }
-    this.animateCash(prev.cash, next.cash, 560);
-    await J.wait(680);
+    this.animateCash(prev.cash, next.cash, this.fast ? 200 : 520);
+    await this.beat(560);
+    this.tweens.add({ targets: banner, alpha: 0, duration: 160, onComplete: () => banner.destroy() });
 
     this.book({ type: 'tap' }, prev, next);
     this.ui.s = next;
@@ -999,7 +1082,7 @@ export class FirmScene extends Phaser.Scene {
     this.emit('tap-done');
     if (next.phase === 'payout') {
       J.alarm(); J.buzz([40, 60, 40]); this.pulseBg(C.gold, 0.6);
-      await J.wait(300);
+      await J.wait(250);
       this.openPayout();
     } else if (next.phase === 'dead') {
       this.showDeath();
@@ -1007,67 +1090,70 @@ export class FirmScene extends Phaser.Scene {
     this.maybeTips();
   }
 
-  private async revealCandle(c: Candle): Promise<void> {
-    const G = this.L.grid;
+  /** Wait one beat of the scoring; a tap or space during the count speeds it up. */
+  private beat(ms: number): Promise<void> { return J.wait(this.fast ? Math.min(ms, 28) : ms); }
+  private fast = false;
+
+  /** Print today's candle in the market strip: it grows with ticks, then lands. The book stays in view. */
+  private async printCandle(c: Candle): Promise<Phaser.GameObjects.Container> {
+    const { wide } = this.L;
+    const S = this.L.strip;
     const layer = this.add.container(0, 0).setDepth(DEPTH.fly - 1);
-    const dim = this.add.graphics();
-    dim.fillStyle(C.ink, 0.78);
-    dim.fillRoundedRect(u(G.x - 10), u(G.y - 10), u(G.w + 20), u(G.h + 20), u(18));
-    const cx = G.x + G.w / 2, cy = G.y + G.h / 2 - 16;
+    // desktop: over the middle of the market strip; phone: over the excuses row, so the score stays in view
+    const bw = wide ? 360 : S.w, bh = wide ? 64 : 40;
+    const bx = wide ? this.L.grid.x + this.L.grid.w / 2 - bw / 2 : S.x, by = wide ? S.y : this.L.hand.y - 6;
+    const g = this.add.graphics();
+    roundRect(g, bx, by, bw, bh, wide ? 16 : 12, C.ink, 0.96);
+    strokeRect(g, bx, by, bw, bh, wide ? 16 : 12, C.line2, 1);
     const candle = this.add.graphics();
-    const label = text(this, cx, cy + 82, '', { size: this.L.wide ? 34 : 26, weight: 800, spacing: 4, align: 'center' }).setOrigin(0.5);
-    const sub = text(this, cx, cy + 116, '', { size: 11.5, weight: 800, color: H.muted, spacing: 1.8, align: 'center' }).setOrigin(0.5);
-    layer.add([dim, candle, label, sub]);
+    const cx = bx + (wide ? 40 : 26), cy = by + bh / 2;
+    const label = text(this, cx + (wide ? 32 : 22), cy - (wide ? 9 : 0), '', { size: wide ? 24 : 17, weight: 800, spacing: wide ? 3 : 2 }).setOrigin(0, 0.5);
+    const sub = text(this, cx + 32, cy + 16, '', { size: 11, weight: 800, color: H.muted, spacing: 1.4 }).setOrigin(0, 0.5);
+    if (!wide) sub.setVisible(false);
+    layer.add([g, candle, label, sub]);
     layer.setAlpha(0);
-    this.tweens.add({ targets: layer, alpha: 1, duration: 120 });
+    this.tweens.add({ targets: layer, alpha: 1, duration: 90 });
+    const hMax = bh - 18;
     const draw = (h: number, color: number): void => {
       candle.clear();
       candle.fillStyle(color, 1);
-      candle.fillRoundedRect(u(cx - 2), u(cy - h / 2 - 26), u(4), u(h + 52), u(2));
-      candle.fillRoundedRect(u(cx - 16), u(cy - h / 2), u(32), u(h), u(4));
+      candle.fillRoundedRect(cx - 1.5, cy - hMax / 2, 3, hMax, 1.5);
+      candle.fillRoundedRect(cx - (wide ? 9 : 7), cy - h / 2, wide ? 18 : 14, h, 3);
     };
-    const st = { h: 8 };
-    this.tweens.add({ targets: st, h: { from: 8, to: 92 }, duration: 640, ease: (v: number) => Math.sin(v * Math.PI * 2.2) * 0.35 + v * 0.65, onUpdate: () => draw(st.h, C.muted) });
-    for (let t = 0; t < 5; t++) { J.tick(); await J.wait(120); }
-    const color = c === 'up' ? C.paper : c === 'down' ? C.clay : c === 'news' ? C.gold : C.muted;
-    this.tweens.killTweensOf(st);
-    draw(c === 'chop' ? 28 : 74, color);
+    const ticks = this.fast ? 1 : 4;
+    for (let t = 0; t < ticks; t++) {
+      draw(6 + (t % 2 ? hMax * 0.55 : hMax * 0.2), C.muted);
+      J.tick(t);
+      await J.wait(70);
+    }
+    const color = CANDLE_COLOR[c];
+    draw(c === 'chop' ? hMax * 0.25 : c === 'news' ? hMax * 0.95 : hMax * 0.7, color);
     label.setText(CANDLE[c]).setColor(c === 'down' ? H.clay : c === 'news' ? H.gold : H.paper);
     sub.setText(CANDLE_SUB[c].toUpperCase());
-    if (c === 'chop') J.coin(0); else if (c === 'news') J.alarm(); else J.thud();
+    J.candle(c);
     J.buzz(c === 'chop' ? 10 : 30);
-    this.pulseBg(color, 0.5);
-    this.burst?.explode(c === 'chop' ? 10 : 26, u(cx), u(cy));
-    label.setScale(1.3);
-    this.tweens.add({ targets: label, scale: 1, duration: 260, ease: 'Back.easeOut' });
-    await J.wait(600);
-    this.tweens.add({ targets: layer, alpha: 0, duration: 140, onComplete: () => layer.destroy() });
+    this.pulseBg(color, c === 'chop' ? 0.25 : 0.5);
+    if (c !== 'chop') this.shake(c === 'news' ? 0.3 : 0.18);
+    label.setScale(1.35);
+    this.tweens.add({ targets: label, scale: 1, duration: 220, ease: 'Back.easeOut' });
+    await this.beat(260);
+    return layer;
   }
 
-  private flyChips(i: number, cash: number, base: number): void {
+  /** A chip that pops off a card: blue fees, clay mult. */
+  private chip(i: number, str: string, fill: number, ink: string, big = false): void {
     const p = this.slotPos(i);
-    const c = this.add.container(u(p.x), u(p.y - this.L.ch / 2 + 6)).setDepth(DEPTH.fly);
-    const pill = (str: string, fill: number, ink: string, x: number): number => {
-      const t = text(this, 0, 0, str, { size: this.L.wide ? 14 : 12, weight: 800, color: ink }).setOrigin(0.5);
-      const w = t.width / u(1) + 14, h = this.L.wide ? 26 : 22;
-      const g = this.add.graphics();
-      roundRect(g, x, -h / 2 + 3, w, h, 8, 0x000000, 0.35);
-      roundRect(g, x, -h / 2, w, h, 8, fill);
-      t.setPosition(u(x + w / 2), 0);
-      c.add([g, t]);
-      return w;
-    };
-    const boosted = cash > 0 && base > 0 && cash !== base;
-    if (cash < 0) pill(signed(cash), C.ink, H.clay, 0);
-    else {
-      const w1 = pill(`+${base > 0 ? base : cash}`, C.chip, H.chipInk, 0);
-      if (boosted) pill(`×${(cash / base).toFixed(1)}`, C.clay, H.clayInk, w1 + 4);
-    }
-    const b = c.getBounds();
-    c.x -= b.width / 2;
-    c.setScale(0.4).setAlpha(0);
-    this.tweens.add({ targets: c, scale: 1.12, alpha: 1, y: c.y - u(20), duration: 200, ease: 'Back.easeOut' });
-    this.tweens.add({ targets: c, y: c.y - u(36), alpha: 0, delay: 640, duration: 320, ease: 'Quad.easeIn', onComplete: () => c.destroy() });
+    if (i < 0) return;
+    const wide = this.L.wide;
+    const t = text(this, 0, 0, str, { size: (wide ? 15 : 12) * (big ? 1.3 : 1), weight: 800, color: ink }).setOrigin(0.5);
+    const w = t.width + 16, h = (wide ? 28 : 22) * (big ? 1.25 : 1);
+    const g = this.add.graphics();
+    roundRect(g, -w / 2, -h / 2 + 3, w, h, 9, 0x000000, 0.35);
+    roundRect(g, -w / 2, -h / 2, w, h, 9, fill);
+    const c = this.add.container(p.x, p.y - this.L.ch * 0.18, [g, t]).setDepth(DEPTH.fly);
+    c.setScale(0.3).setAlpha(0).setAngle((Math.random() - 0.5) * 16);
+    this.tweens.add({ targets: c, scale: 1, alpha: 1, angle: 0, y: c.y - (wide ? 26 : 18), duration: 180, ease: 'Back.easeOut' });
+    this.tweens.add({ targets: c, y: c.y - (wide ? 50 : 34), alpha: 0, delay: this.fast ? 200 : 560, duration: 260, ease: 'Quad.easeIn', onComplete: () => c.destroy() });
   }
 
   private animateCash(from: number, to: number, ms: number): void {
@@ -1077,119 +1163,200 @@ export class FirmScene extends Phaser.Scene {
 
   // ---------------------------------------------------------------- shop
 
+  /** On phones the shop needs the lower half: the HUD folds into one bar and the book slides up. */
+  private compact(): boolean { return !this.L.wide && this.ui.s.phase === 'draft'; }
+
   private renderShop(): void {
     const s = this.ui.s;
     const wasOpen = !!this.shop;
     this.shop?.destroy();
     this.shop = null;
-    delete this.hits.shop; delete this.hits.offers;
+    this.previewG?.destroy(); this.previewG = null;
+    for (const k of Object.keys(this.hits)) if (k === 'shop' || k === 'offers' || k === 'reroll' || k === 'skip' || k === 'back' || k.startsWith('offer')) delete this.hits[k];
     if (s.phase !== 'draft') return;
-    const { W, H: Hh, wide, center: CT, view: V } = this.L;
+    const { wide } = this.L;
+    const P = this.L.shopPanel;
     const root = this.add.container(0, 0).setDepth(DEPTH.shop);
     this.shop = root;
-    const below = Math.max(0, V.y + V.h - Hh) + 24;
-    if (this.ui.selected !== null) {
-      const o = s.offers[this.ui.selected];
-      const bw = wide ? CT.w : W - 20, bh = wide ? 84 : 76;
-      const bx = wide ? CT.x : 10, by = Hh - bh - (wide ? 16 : 6);
-      const g = this.add.graphics();
-      roundRect(g, bx, by, bw, bh, 16, C.panel, 0.97);
-      strokeRect(g, bx, by, bw, bh, 16, C.gold, 1, 0.5);
-      const t = text(this, bx + 18, by + (wide ? 20 : 16), `PLACE ${o ? offerName(o).toUpperCase() : ''}`, { size: wide ? 15 : 13, weight: 800, spacing: 2.4, color: H.gold });
-      const sub = text(this, bx + 18, by + (wide ? 46 : 40), 'Tap a glowing slot on the book', { size: 12, weight: 600, color: H.muted });
-      root.add([g, t, sub]);
-      const back = new Button(this, bx + bw - 236, by + (bh - 48) / 2, 108, 48, 'BACK', { ...STYLE.dark, size: 11 });
-      back.onClick = () => { this.ui.selected = null; this.renderGrid(); this.renderShop(); };
-      const skip = new Button(this, bx + bw - 120, by + (bh - 48) / 2, 104, 48, 'SKIP', { ...STYLE.dark, size: 11 });
-      skip.onClick = () => { if (!this.gate('skip')) return; this.ui.selected = null; this.act({ type: 'draft', pick: null }); this.emit('drafted'); };
-      root.add([back, skip]);
-      this.hits.shop = { x: bx, y: by, w: bw, h: bh };
-      root.y = 40; root.setAlpha(0);
-      this.tweens.add({ targets: root, y: 0, alpha: 1, duration: 220, ease: 'Cubic.easeOut' });
-      return;
-    }
-    const pw = wide ? CT.w : W;
-    const pad = wide ? 20 : 12;
-    const cardH = wide ? 280 : Math.min(230, Hh * 0.27);
-    const ph = pad + 22 + 14 + cardH + 14 + 50 + pad + 8;
-    const px = wide ? CT.x : 0, py = Hh - ph + 8;
     const g = this.add.graphics();
-    roundRect(g, px, py, pw, ph + below, 20, C.panel, 0.97);
-    strokeRect(g, px, py, pw, ph + below, 20, C.line2, 1);
+    const extra = wide ? 0 : Math.max(0, this.L.view.y + this.L.view.h - this.L.H) + 24;
+    roundRect(g, P.x, P.y, P.w, P.h + extra, 20, C.panel, 0.98);
+    strokeRect(g, P.x, P.y, P.w, P.h + extra, 20, this.ui.selected !== null ? C.goldDeep : C.line2, 1);
     root.add(g);
-    root.add(text(this, px + pad + 2, py + pad, 'THE HIRING FLOOR', { size: 14, weight: 800, spacing: 3.4 }));
-    root.add(text(this, px + pw - pad - 2, py + pad + 2, `cash ${money(s.cash)} · payroll ${money(s.payroll.amount)} in ${Math.max(0, s.payroll.dueDay - s.day)}d`, { size: 12, weight: 700, color: H.muted }).setOrigin(1, 0));
-    const ow = (pw - 2 * pad - 2 * (wide ? 16 : 8)) / 3;
-    const oy = py + pad + 36;
-    s.offers.forEach((o, i) => {
-      const ox = px + pad + i * (ow + (wide ? 16 : 8));
-      root.add(this.offerCard(o, i, ox, oy, ow, cardH));
-      this.hits[`offer${i}`] = { x: ox, y: oy, w: ow, h: cardH };
-    });
-    this.hits.offers = { x: px + pad, y: oy, w: pw - 2 * pad, h: cardH };
-    const by = oy + cardH + 14, bw = (pw - 2 * pad - 10) / 2;
-    const rr = new Button(this, px + pad, by, bw, 50, `REROLL · ${money(rerollPrice(s))}`, { ...STYLE.dark, size: 12 });
-    rr.setEnabled(s.cash >= rerollPrice(s));
-    rr.onClick = () => { if (!this.gate('reroll')) return; J.tick(); this.act({ type: 'reroll' }); };
-    const sk = new Button(this, px + pad + bw + 10, by, bw, 50, 'SKIP', { ...STYLE.gold, size: 12 });
-    sk.onClick = () => { if (!this.gate('skip')) return; this.act({ type: 'draft', pick: null }); this.emit('drafted'); };
-    root.add([rr, sk]);
-    this.hits.reroll = { x: px + pad, y: by, w: bw, h: 50 };
-    this.hits.skip = { x: px + pad + bw + 10, y: by, w: bw, h: 50 };
-    this.hits.shop = { x: px, y: py, w: pw, h: ph };
-    if (!wasOpen) { root.y = ph; this.tweens.add({ targets: root, y: 0, duration: 340, ease: 'Back.easeOut', easeParams: [0.9] }); }
+    const pad = wide ? 20 : 12;
+    if (this.ui.selected !== null) this.renderPlacing(root, P, pad);
+    else this.renderOffers(root, P, pad);
+    this.hits.shop = { ...P };
+    if (!wasOpen) {
+      if (wide) { root.x = P.w + 40; this.tweens.add({ targets: root, x: 0, duration: 320, ease: 'Back.easeOut', easeParams: [0.8] }); }
+      else { root.y = P.h; this.tweens.add({ targets: root, y: 0, duration: 320, ease: 'Back.easeOut', easeParams: [0.8] }); }
+      J.whoosh(true);
+    }
   }
 
-  private offerCard(o: Offer, i: number, x: number, y: number, w: number, h: number): Phaser.GameObjects.Container {
+  private renderOffers(root: Phaser.GameObjects.Container, P: Rect, pad: number): void {
+    const s = this.ui.s;
+    const { wide } = this.L;
+    root.add(text(this, P.x + pad, P.y + pad, 'HIRING FLOOR', { size: wide ? 13 : 12, weight: 800, spacing: 3 }));
+    const left = Math.max(0, s.payroll.dueDay - s.day);
+    root.add(text(this, P.x + P.w - pad, P.y + pad + 1, `payroll ${money(s.payroll.amount)} in ${left}d`, { size: wide ? 12 : 11, weight: 700, color: H.muted }).setOrigin(1, 0));
+    const top = P.y + pad + (wide ? 34 : 28);
+    const btnH = wide ? 52 : 48;
+    const n = Math.max(1, s.offers.length);
+    if (wide) {
+      // stacked, landscape cards
+      const gap = 14, oh = Math.min(216, (P.h - (top - P.y) - btnH - pad - 16 - gap * (n - 1)) / n);
+      s.offers.forEach((o, i) => {
+        const oy = top + i * (oh + gap);
+        root.add(this.offerCard(o, i, P.x + pad, oy, P.w - 2 * pad, oh, true));
+        this.hits[`offer${i}`] = { x: P.x + pad, y: oy, w: P.w - 2 * pad, h: oh };
+      });
+    } else {
+      const gap = 8, ow = (P.w - 2 * pad - gap * 2) / 3;
+      const oh = Math.min(240, P.h - (top - P.y) - btnH - pad - 14);
+      s.offers.forEach((o, i) => {
+        const ox = P.x + pad + i * (ow + gap);
+        root.add(this.offerCard(o, i, ox, top, ow, oh, false));
+        this.hits[`offer${i}`] = { x: ox, y: top, w: ow, h: oh };
+      });
+    }
+    this.hits.offers = { x: P.x + pad, y: top, w: P.w - 2 * pad, h: P.y + P.h - btnH - pad - top };
+    const by = P.y + P.h - pad - btnH, bw = (P.w - 2 * pad - 10) / 2;
+    const rr = new Button(this, P.x + pad, by, bw, btnH, `REROLL ${money(rerollPrice(s))}`, { ...STYLE.dark, size: 12 });
+    rr.setEnabled(s.cash >= rerollPrice(s));
+    rr.onClick = () => { if (!this.gate('reroll')) return; J.flip(); this.act({ type: 'reroll' }); };
+    const sk = new Button(this, P.x + pad + bw + 10, by, bw, btnH, 'NEXT DAY', { ...STYLE.gold, size: 12, sub: 'skip hiring' });
+    sk.onClick = () => { if (!this.gate('skip')) return; this.act({ type: 'draft', pick: null }); this.emit('drafted'); };
+    root.add([rr, sk]);
+    this.hits.reroll = { x: P.x + pad, y: by, w: bw, h: btnH };
+    this.hits.skip = { x: P.x + pad + bw + 10, y: by, w: bw, h: btnH };
+  }
+
+  /** Placing a hire: the card on the left, and every empty slot on the book shows what it would earn there. */
+  private renderPlacing(root: Phaser.GameObjects.Container, P: Rect, pad: number): void {
+    const s = this.ui.s;
+    const { wide } = this.L;
+    const o = s.offers[this.ui.selected ?? -1];
+    if (!o) return;
+    root.add(text(this, P.x + pad, P.y + pad, `PLACE ${offerName(o).toUpperCase()}`, { size: wide ? 14 : 12.5, weight: 800, spacing: 2, color: H.gold, wrap: P.w - 2 * pad }));
+    const btnH = wide ? 52 : 48;
+    const by = P.y + P.h - pad - btnH, bw = (P.w - 2 * pad - 10) / 2;
+    const top = P.y + pad + (wide ? 34 : 28);
+    if (wide) {
+      const oh = Math.min(260, by - top - 80);
+      root.add(this.offerCard(o, this.ui.selected ?? 0, P.x + pad, top, P.w - 2 * pad, oh, true, true));
+      root.add(text(this, P.x + pad, top + oh + 18, 'Tap a slot on the book. The number on each slot is what this hire adds to an average day there.', { size: 12.5, weight: 600, color: H.muted, wrap: P.w - 2 * pad, lineSpacing: 3 }));
+    } else {
+      const oh = Math.min(170, by - top - 46);
+      root.add(this.offerCard(o, this.ui.selected ?? 0, P.x + pad, top, P.w - 2 * pad, oh, true, true));
+      root.add(text(this, P.x + pad, top + oh + 12, 'Tap a slot. Each shows what this hire adds to an average day there.', { size: 11.5, weight: 600, color: H.muted, wrap: P.w - 2 * pad }));
+    }
+    const back = new Button(this, P.x + pad, by, bw, btnH, 'BACK', { ...STYLE.dark, size: 12 });
+    back.onClick = () => { this.ui.selected = null; this.renderGrid(); this.renderShop(); };
+    const skip = new Button(this, P.x + pad + bw + 10, by, bw, btnH, 'NEXT DAY', { ...STYLE.dark, size: 12, sub: 'skip hiring' });
+    skip.onClick = () => { if (!this.gate('skip')) return; this.ui.selected = null; this.act({ type: 'draft', pick: null }); this.emit('drafted'); };
+    root.add([back, skip]);
+    this.hits.back = { x: P.x + pad, y: by, w: bw, h: btnH };
+    this.hits.skip = { x: P.x + pad + bw + 10, y: by, w: bw, h: btnH };
+    // the preview: +$/day on every empty slot, best one in gold
+    if (o.kind !== 'card') return;
+    const id = cardDef(o.id).disguise ? 'retail' : o.id;
+    const now = expectedTake(s);
+    const deltas = s.grid.map((c, i) => (c ? null : previewPlacement(s, id, i) - now));
+    const vals = deltas.filter((d): d is number => d !== null);
+    const best = Math.max(...vals);
+    // only crown a slot that actually beats the others
+    const crown = best > 0 && vals.filter((d) => d === best).length < vals.length ? best : Infinity;
+    const pg = this.add.graphics().setDepth(DEPTH.cards + 5);
+    this.previewG = this.add.container(0, 0).setDepth(DEPTH.cards + 6);
+    this.previewG.add(pg);
+    deltas.forEach((d, i) => {
+      if (d === null) return;
+      const p = this.slotPos(i);
+      const top1 = d === crown;
+      const str = `${d >= 0 ? '+' : '−'}$${Math.abs(d)}`;
+      const t = text(this, p.x, p.y - 6, str, { size: (wide ? 20 : 14) * (top1 ? 1.15 : 1), weight: 800, color: top1 ? H.ink : d > 0 ? H.gold : H.muted }).setOrigin(0.5);
+      const sub = text(this, p.x, p.y + (wide ? 14 : 10), 'A DAY', { size: wide ? 9.5 : 7.5, weight: 800, color: top1 ? H.ink : H.muted, spacing: 1.2 }).setOrigin(0.5);
+      if (top1) roundRect(pg, p.x - this.L.cw / 2 + 6, p.y - (wide ? 24 : 18), this.L.cw - 12, wide ? 50 : 38, 10, C.gold, 0.95);
+      this.previewG?.add([t, sub]);
+    });
+  }
+
+  private offerCard(o: Offer, i: number, x: number, y: number, w: number, h: number, landscape: boolean, still = false): Phaser.GameObjects.Container {
     const s = this.ui.s;
     const price = offerPrice(o, s);
     const broke = s.cash < price;
     const rarity = offerRarity(o);
-    const c = this.add.container(u(x + w / 2), u(y + h / 2));
+    const look = offerLook(o);
+    const c = this.add.container(x + w / 2, y + h / 2);
     const g = this.add.graphics();
-    roundRect(g, -w / 2 + 1, -h / 2 + 7, w, h, 14, 0x000000, 0.5);
-    roundRect(g, -w / 2, -h / 2, w, h, 14, C.paper);
-    strokeRect(g, -w / 2 + 4, -h / 2 + 4, w - 8, h - 8, 11, C.ink, 1, 0.12);
-    if (rarity === 'rare') strokeRect(g, -w / 2 + 1, -h / 2 + 1, w - 2, h - 2, 14, C.gold, 2.5);
-    if (rarity === 'uncommon') strokeRect(g, -w / 2 + 1, -h / 2 + 1, w - 2, h - 2, 14, C.plat, 1.5);
+    const r = 14;
+    roundRect(g, -w / 2 + 1, -h / 2 + 7, w, h, r, 0x000000, 0.5);
+    roundRect(g, -w / 2, -h / 2 + 3, w, h, r, C.paper3);
+    roundRect(g, -w / 2, -h / 2, w, h, r, C.paper);
+    const bandH = landscape ? 30 : 24;
+    g.fillStyle(look.band, 1);
+    g.fillRoundedRect(-w / 2, -h / 2, w, bandH, { tl: r, tr: r, bl: 0, br: 0 });
+    if (rarity === 'rare') strokeRect(g, -w / 2 + 1.5, -h / 2 + 1.5, w - 3, h - 3, r - 1, C.gold, 3);
     c.add(g);
-    const tagColor = rarity === 'rare' ? H.goldDeep : rarity === 'uncommon' ? H.blue : rarity === 'excuse' ? H.clayDeep : H.inkSoft;
-    c.add(text(this, -w / 2 + 12, -h / 2 + 12, offerTag(o), { size: 9, weight: 800, color: tagColor, spacing: 1.8 }));
-    const artSize = Math.min(w * 0.46, h * 0.3);
-    const art = this.add.image(0, u(-h / 2 + 30 + artSize / 2), artTexture(this, offerArt(o))).setDisplaySize(u(artSize), u(artSize));
-    c.add(art);
-    const ny = -h / 2 + 40 + artSize;
-    const name = text(this, -w / 2 + 12, ny, offerName(o), { size: this.L.wide ? 16 : 12.5, weight: 800, color: H.ink, wrap: w - 24 });
-    c.add(name);
-    const by = ny + name.height / u(1) + 4;
-    if (h - (by + h / 2) > 30) c.add(text(this, -w / 2 + 12, by, offerBlurb(o), { size: this.L.wide ? 12 : 10.5, weight: 600, color: H.inkSoft, wrap: w - 24, lineSpacing: 1 }));
-    // price badge
+    const pad = landscape ? 14 : 8;
+    c.add(text(this, -w / 2 + pad, -h / 2 + bandH / 2, `${rarity === 'rare' ? 'RARE ' : ''}${look.label}`, { size: landscape ? 10 : 8, weight: 800, color: look.ink, spacing: 1.4 }).setOrigin(0, 0.5));
+    if (look.stat) c.add(text(this, w / 2 - pad - (landscape ? 0 : 0), -h / 2 + bandH / 2, look.stat, { size: landscape ? 13 : 10, weight: 800, color: look.ink }).setOrigin(1, 0.5));
+    const body = offerBlurb(o);
+    if (landscape) {
+      const artS = Math.min(h - bandH - 24, w * 0.32);
+      c.add(this.add.image(-w / 2 + pad + artS / 2, -h / 2 + bandH + 10 + artS / 2, artTexture(this, offerArt(o))).setDisplaySize(artS, artS));
+      const tx = -w / 2 + pad + artS + 14, tw = w / 2 - pad - tx;
+      const nm = text(this, tx, -h / 2 + bandH + 10, offerName(o), { size: 17, weight: 800, color: H.ink, wrap: tw });
+      c.add(nm);
+      const bt = text(this, tx, nm.y + nm.height + 4, body, { size: 12.5, weight: 600, color: H.inkSoft, wrap: tw, lineSpacing: 1.5 });
+      if (bt.y + bt.height > h / 2 - 34) bt.setFontSize(11.5);
+      c.add(bt);
+    } else {
+      const artS = Math.min(w * 0.62, h * 0.32);
+      c.add(this.add.image(0, -h / 2 + bandH + 6 + artS / 2, artTexture(this, offerArt(o))).setDisplaySize(artS, artS));
+      const ny = -h / 2 + bandH + 10 + artS;
+      const nm = text(this, -w / 2 + pad, ny, offerName(o), { size: 12, weight: 800, color: H.ink, wrap: w - 2 * pad });
+      c.add(nm);
+      const bt = text(this, -w / 2 + pad, ny + nm.height + 2, body, { size: 9.5, weight: 600, color: H.inkSoft, wrap: w - 2 * pad, lineSpacing: 1 });
+      // trim the blurb to the card
+      const maxH = h / 2 - 30 - bt.y;
+      let words = body.split(' ');
+      while (bt.height > maxH && words.length > 3) { words = words.slice(0, -1); bt.setText(`${words.join(' ')}…`); }
+      c.add(bt);
+    }
+    // price
+    const pt = text(this, 0, 0, price === 0 ? 'FREE' : money(price), { size: landscape ? 16 : 12.5, weight: 800, color: broke ? H.clay : H.ink }).setOrigin(0.5);
+    const bw = pt.width + 18, bh = landscape ? 30 : 24;
+    const px = w / 2 - bw / 2 - pad + 4, py = h / 2 - bh / 2 - (landscape ? 10 : 6);
     const pg = this.add.graphics();
-    const pt = text(this, 0, 0, price === 0 ? 'FREE' : money(price), { size: this.L.wide ? 13 : 11.5, weight: 800, color: broke ? H.clay : H.ink }).setOrigin(0.5);
-    const bw = pt.width / u(1) + 16;
-    roundRect(pg, w / 2 - bw - 8, -h / 2 - 10, bw, 24, 8, broke ? C.panel2 : C.goldDeep);
-    roundRect(pg, w / 2 - bw - 8, -h / 2 - 10, bw, 22, 8, broke ? C.panel2 : C.gold);
-    if (broke) strokeRect(pg, w / 2 - bw - 8, -h / 2 - 10, bw, 22, 8, C.clay, 1);
-    pt.setPosition(u(w / 2 - bw / 2 - 8), u(-h / 2 + 1));
+    roundRect(pg, px - bw / 2, py - bh / 2 + 3, bw, bh, 9, broke ? C.panel2 : C.goldDeep);
+    roundRect(pg, px - bw / 2, py - bh / 2, bw, bh, 9, broke ? C.panel2 : C.gold);
+    if (broke) strokeRect(pg, px - bw / 2, py - bh / 2, bw, bh, 9, C.clay, 1);
+    pt.setPosition(px, py);
     c.add([pg, pt]);
-    if (broke) c.setAlpha(0.55);
-    // springy hover + sway
+    if (broke && !still) {
+      c.add(text(this, -w / 2 + pad, h / 2 - (landscape ? 18 : 12), "CAN'T AFFORD", { size: landscape ? 10 : 8, weight: 800, color: H.clayDeep, spacing: 1.2 }).setOrigin(0, 0.5));
+      c.setAlpha(0.6);
+    }
+    if (still) return c;
+    // springy hover, sway, deal-in
     const sc = new Spring(1, 1, 300, 16), lift = new Spring(0, 0, 300, 20), ph = Math.random() * 6;
     let t = 0;
     const tick = (_time: number, dtMs: number): void => {
       const dt = Math.min(0.05, dtMs / 1000); t += dt;
       c.setScale(sc.step(dt));
-      c.y = u(y + h / 2) + u(lift.step(dt)) + Math.sin(t * 1.4 + ph) * u(2);
-      c.rotation = Math.sin(t * 1.1 + ph) * 0.01;
+      c.y = y + h / 2 + lift.step(dt) + Math.sin(t * 1.4 + ph) * 1.5;
+      c.rotation = Math.sin(t * 1.1 + ph) * (landscape ? 0.004 : 0.01);
     };
     this.events.on('update', tick);
     c.once('destroy', () => this.events.off('update', tick));
-    c.setSize(u(w), u(h)).setInteractive({ useHandCursor: true });
-    c.on('pointerover', () => { sc.target = 1.05; lift.target = -8; if (!broke) J.tick(); });
+    c.setSize(w, h).setInteractive({ useHandCursor: true });
+    c.on('pointerover', () => { sc.target = 1.04; lift.target = -6; if (!broke) J.tick(i); });
     c.on('pointerout', () => { sc.target = 1; lift.target = 0; });
     c.on('pointerup', () => { sc.x = 0.94; sc.kick(3); this.chooseOffer(i); });
     c.setScale(0.6);
-    sc.kick(4 + i * 0.6);
+    this.time.delayedCall(i * 70, () => { sc.kick(4); J.flip(); });
     return c;
   }
 

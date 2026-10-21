@@ -15,6 +15,31 @@ export function artId(card: CardInstance): string {
   return card.def;
 }
 
+/** What a card's face says at a glance: band colour, label, headline number. */
+export interface CardLook { band: number; ink: string; label: string; stat: string; ring?: number; fraud: boolean }
+
+/** The headline number for cards that add mult (shown in their band). */
+const MULT_STAT: Record<string, string> = {
+  affiliate: '+.15 ea', riskanalyst: '+.2 ea', quantdesk: '+1 chop', hypeteam: '+.05 ea', cro: '×2', proofwall: '×Mult', vet: '+0.1',
+};
+
+export function cardLook(card: CardInstance): CardLook {
+  const def = cardDef(card.def);
+  const hidden = !card.revealed && !!def.disguise;
+  if (card.revealed && def.fraud) return { band: C.clay, ink: H.clayInk, label: 'FRAUD', stat: '', ring: C.clay, fraud: true };
+  if (card.def === 'vet') return { band: C.gold, ink: H.ink, label: 'FUNDED', stat: '+0.1', fraud: false };
+  if (def.kind === 'staff') {
+    const m = MULT_STAT[card.def];
+    const rare = def.rarity === 'rare';
+    return m
+      ? { band: C.clay, ink: H.clayInk, label: 'MULT', stat: m, ...(rare ? { ring: C.gold } : {}), fraud: false }
+      : { band: C.plat, ink: H.ink, label: 'STAFF', stat: '', ...(rare ? { ring: C.gold } : {}), fraud: false };
+  }
+  const fee = ((hidden ? SAMPLE_FEE.retail : SAMPLE_FEE[card.def]) ?? 0) + card.bonus;
+  const rare = def.rarity === 'rare' && !hidden;
+  return { band: C.chip, ink: H.chipInk, label: fee ? 'FEES' : 'CUSTOMER', stat: fee ? `$${fee}` : '', ...(rare ? { ring: C.gold } : {}), fraud: false };
+}
+
 /** Card art as a Phaser texture, generated once per id. */
 export function artTexture(scene: Phaser.Scene, id: string): string {
   const key = `art:${id}`;
@@ -48,6 +73,7 @@ export class CardView extends Phaser.GameObjects.Container {
   card: CardInstance | null = null;
   homeX = 0;
   homeY = 0;
+  private baseY = 0;
   due = false;
   dim = false;
   sway = true;
@@ -72,72 +98,76 @@ export class CardView extends Phaser.GameObjects.Container {
     scene.add.existing(this);
   }
 
-  place(x: number, y: number): this { this.homeX = x; this.homeY = y; this.x = x; this.y = y; return this; }
+  place(x: number, y: number): this { this.homeX = x; this.homeY = y; this.x = x; this.y = y; this.baseY = y; return this; }
+  /** Glide to a new home (the book sliding up on phones while hiring). */
+  glideTo(x: number, y: number): this { this.homeX = x; this.homeY = y; return this; }
 
   setCard(card: CardInstance | null): this {
     this.card = card;
     const { cw, ch } = this;
     const big = cw > 100;
-    const r = Math.max(8, cw * 0.1);
+    const r = Math.max(8, cw * 0.09);
     this.face.clear(); this.shadow.clear(); this.glow.clear();
     this.deco.removeAll(true);
     if (!card) {
-      roundRect(this.face, -cw / 2, -ch / 2, cw, ch, r, C.paper, 0.025);
-      strokeRect(this.face, -cw / 2, -ch / 2, cw, ch, r, C.paper, 1, 0.07);
+      roundRect(this.face, -cw / 2, -ch / 2, cw, ch, r, C.paper, 0.03);
+      strokeRect(this.face, -cw / 2, -ch / 2, cw, ch, r, C.paper, 1, 0.08);
       this.deco.add(text(this.scene, 0, 0, '+', { size: big ? 22 : 16, weight: 600, color: H.muted }).setOrigin(0.5).setAlpha(0.22));
       this.due = false;
       return this;
     }
     const def = cardDef(card.def);
-    const hidden = !card.revealed && !!def.disguise;
-    const staff = def.kind === 'staff';
-    const rare = def.rarity === 'rare' && !hidden;
-    const exposed = card.revealed && !!def.fraud;
+    const look = cardLook(card);
     const t = def.threshold ?? 0;
     this.due = !!t && card.progress >= t;
-    const paper = staff ? 0xe6e6e3 : C.paper;
-    const edge = staff ? 0xbfc2c6 : C.paper3;
     // shadow, card thickness, face
     roundRect(this.shadow, -cw / 2 + 2, -ch / 2 + (big ? 9 : 6), cw, ch, r, 0x000000, 0.45);
-    roundRect(this.face, -cw / 2, -ch / 2 + 3, cw, ch, r, edge);
-    roundRect(this.face, -cw / 2, -ch / 2, cw, ch, r, paper);
-    strokeRect(this.face, -cw / 2 + 4, -ch / 2 + 4, cw - 8, ch - 8, r - 3, C.ink, 1, 0.1);
-    if (rare) strokeRect(this.face, -cw / 2 + 1.5, -ch / 2 + 1.5, cw - 3, ch - 3, r - 1, C.gold, 3);
-    else if (staff) strokeRect(this.face, -cw / 2 + 1, -ch / 2 + 1, cw - 2, ch - 2, r - 1, C.plat, 2);
-    if (exposed) strokeRect(this.face, -cw / 2 + 1.5, -ch / 2 + 1.5, cw - 3, ch - 3, r - 1, C.clay, 3);
+    roundRect(this.face, -cw / 2, -ch / 2 + 3, cw, ch, r, C.paper3);
+    roundRect(this.face, -cw / 2, -ch / 2, cw, ch, r, C.paper);
+    // the band: what kind of card this is, and its number
+    const bandH = Math.round(ch * (big ? 0.17 : 0.2));
+    this.face.fillStyle(look.band, 1);
+    this.face.fillRoundedRect(-cw / 2, -ch / 2, cw, bandH, { tl: r, tr: r, bl: 0, br: 0 });
+    this.face.fillStyle(0x000000, 0.12);
+    this.face.fillRect(-cw / 2, -ch / 2 + bandH - 2, cw, 2);
+    if (look.ring !== undefined) strokeRect(this.face, -cw / 2 + 1.5, -ch / 2 + 1.5, cw - 3, ch - 3, r - 1, look.ring, big ? 3 : 2.5);
     if (this.due) {
-      this.glow.fillStyle(C.gold, 0.32);
+      this.glow.fillStyle(C.gold, 0.34);
       this.glow.fillRoundedRect(-cw / 2 - 7, -ch / 2 - 7, cw + 14, ch + 14, r + 6);
       strokeRect(this.face, -cw / 2 - 1, -ch / 2 - 1, cw + 2, ch + 2, r + 1, C.gold, 3);
     }
+    const bs = big ? 12.5 : 9.5;
+    const pad = big ? 9 : 5;
+    this.deco.add(text(this.scene, -cw / 2 + pad, -ch / 2 + bandH / 2, look.label, { size: bs * 0.78, weight: 800, color: look.ink, spacing: big ? 1.2 : 0.6 }).setOrigin(0, 0.5));
+    if (look.stat) this.deco.add(text(this.scene, cw / 2 - pad, -ch / 2 + bandH / 2, look.stat, { size: bs, weight: 800, color: look.ink }).setOrigin(1, 0.5));
     // art, big and central
-    const size = Math.min(cw * 0.78, ch * 0.5);
-    const art = this.scene.add.image(0, -ch * 0.05, artTexture(this.scene, artId(card))).setDisplaySize(size, size);
-    if (exposed) art.setTint(0xb8452a);
+    const top = -ch / 2 + bandH, bottom = ch / 2 - (t ? (big ? 40 : 28) : (big ? 30 : 22));
+    const size = Math.min(cw * 0.7, (bottom - top) * 0.92);
+    const art = this.scene.add.image(0, (top + bottom) / 2, artTexture(this.scene, artId(card))).setDisplaySize(size, size);
+    if (look.fraud) art.setTint(0x9f3a22);
     this.deco.add(art);
-    // top-left chip: daily fee, or the card's role
-    const pad = big ? 8 : 5, ps = big ? 12 : 9;
-    const base = (hidden ? SAMPLE_FEE.retail : SAMPLE_FEE[card.def]) ?? 0;
-    if (exposed) pill(this.scene, this.deco, -cw / 2 + pad, -ch / 2 + pad, 'FRAUD', C.clay, H.clayInk, ps * 0.85);
-    else if (staff) pill(this.scene, this.deco, -cw / 2 + pad, -ch / 2 + pad, 'STAFF', C.plat, H.ink, ps * 0.85);
-    else if (base > 0 || card.bonus) pill(this.scene, this.deco, -cw / 2 + pad, -ch / 2 + pad, `$${base + card.bonus}`, C.chip, H.chipInk, ps);
-    if (card.bonus) pill(this.scene, this.deco, cw / 2 - pad, -ch / 2 + pad, `+${card.bonus}`, C.gold, H.ink, ps * 0.85, 'right');
     // name
-    const name = text(this.scene, 0, ch / 2 - (t ? (big ? 26 : 18) : (big ? 18 : 13)), shortName(displayName(card)), { size: big ? 13.5 : 9.5, weight: 800, color: H.ink, align: 'center' }).setOrigin(0.5);
-    const max = cw - 10;
-    let s = name.text;
-    while (name.width > max && s.length > 3) { s = s.slice(0, -1); name.setText(`${s.trimEnd()}…`); }
+    const ny = ch / 2 - (t ? (big ? 30 : 21) : (big ? 17 : 12));
+    const name = text(this.scene, 0, ny, shortName(displayName(card)), { size: big ? 13.5 : 9.5, weight: 800, color: H.ink, align: 'center' }).setOrigin(0.5);
+    const max = cw - 8;
+    let n = name.text;
+    while (name.width > max && n.length > 3) { n = n.slice(0, -1); name.setText(`${n.trimEnd()}…`); }
     this.deco.add(name);
-    // payout meter
+    // payout pips: one per point of progress
     if (t) {
-      const mx = -cw / 2 + (big ? 10 : 6), mw = cw - (big ? 20 : 12), my = ch / 2 - (big ? 12 : 8), mh = big ? 5 : 4;
       const g = this.scene.add.graphics();
-      roundRect(g, mx, my, mw, mh, mh / 2, C.ink, 0.12);
-      const f = Math.min(1, card.progress / t);
-      if (f > 0) roundRect(g, mx, my, Math.max(mh, mw * f), mh, mh / 2, this.due ? C.goldDeep : f >= 0.7 ? C.clay : C.ink, 1);
+      const py = ch / 2 - (big ? 12 : 8), gap = big ? 3 : 2;
+      const pw = (cw - 2 * pad - gap * (t - 1)) / t, ph = big ? 6 : 4;
+      const hot = card.progress / t >= 0.7;
+      for (let k = 0; k < t; k++) {
+        const on = k < card.progress;
+        g.fillStyle(on ? (this.due ? C.goldDeep : hot ? C.clay : C.ink) : C.ink, on ? 1 : 0.12);
+        g.fillRoundedRect(-cw / 2 + pad + k * (pw + gap), py - ph / 2, pw, ph, Math.min(2, ph / 2));
+      }
       this.deco.add(g);
     }
     if (this.due) pill(this.scene, this.deco, 0, -ch / 2 - (big ? 11 : 8), 'PAYOUT', C.gold, H.ink, big ? 10 : 8, 'center');
+    if (card.stalledUntil > 0 && !this.due && t && card.progress >= t) pill(this.scene, this.deco, 0, -ch / 2 - (big ? 11 : 8), 'STALLED', C.panel2, H.muted, big ? 9 : 7.5, 'center');
     return this;
   }
 
@@ -159,8 +189,10 @@ export class CardView extends Phaser.GameObjects.Container {
     const bob = live ? Math.sin(this.t * 1.6 + this.phase) * 1.6 : 0;
     this.setScale(this.sc.step(dt));
     this.rotation = this.rot.step(dt) + sway;
-    this.y = this.homeY + this.lift.step(dt) + bob;
-    this.x = this.homeX;
+    const glide = Math.min(1, dt * 14);
+    this.baseY += (this.homeY - this.baseY) * glide;
+    this.x += (this.homeX - this.x) * glide;
+    this.y = this.baseY + this.lift.step(dt) + bob;
     if (this.due) this.glow.setAlpha(0.55 + 0.45 * Math.sin(this.t * 4));
     this.setAlpha(this.dim ? 0.45 : 1);
     this.shadow.setPosition(-this.lift.x * 0.12, -this.lift.x * 0.25);

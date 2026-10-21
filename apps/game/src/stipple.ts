@@ -209,6 +209,9 @@ const ART: Record<string, Draw> = {
   lawyer: (c) => { c.save(); c.translate(56, 46); c.rotate(-0.6); rr(c, -26, -12, 52, 24, 6); rr(c, -5, 10, 10, 54, 4); c.restore(); rr(c, 52, 94, 50, 12, 4); },
   upsell: (c) => { rr(c, 20, 74, 18, 30, 3); rr(c, 46, 58, 18, 46, 3); rr(c, 72, 40, 18, 64, 3); stroke(c, 5, () => { c.moveTo(22, 56); c.lineTo(48, 38); c.lineTo(62, 46); c.lineTo(94, 18); }); poly(c, [96, 12, 98, 30, 82, 18]); },
   proofwall: (c) => { c.beginPath(); c.moveTo(30, 12); c.lineTo(90, 12); c.lineTo(90, 106); for (let i = 0; i < 6; i++) { c.lineTo(85 - i * 10, 100); c.lineTo(80 - i * 10, 106); } c.closePath(); c.fill(); cut(c, () => { rr(c, 40, 26, 40, 5, 2); rr(c, 40, 38, 28, 5, 2); poly(c, [42, 64, 52, 74, 76, 50, 80, 56, 52, 84, 38, 70]); }); },
+  quantdesk: (c) => { rr(c, 12, 18, 96, 66, 8); cut(c, () => rr(c, 20, 26, 80, 50, 4)); for (const [x, y, h] of [[30, 50, 18], [44, 40, 24], [58, 54, 14], [72, 34, 30], [86, 44, 20]]) { rr(c, (x ?? 0) - 1, (y ?? 0) - 6, 2, (h ?? 0) + 12, 1); rr(c, (x ?? 0) - 4, y ?? 0, 8, h ?? 0, 2); } rr(c, 50, 84, 20, 14, 2); rr(c, 34, 96, 52, 8, 4); },
+  hypeteam: (c) => { c.beginPath(); c.moveTo(60, 8); c.bezierCurveTo(78, 34, 98, 52, 92, 80); c.bezierCurveTo(88, 102, 72, 112, 60, 112); c.bezierCurveTo(44, 112, 26, 102, 26, 78); c.bezierCurveTo(26, 58, 40, 50, 44, 32); c.bezierCurveTo(52, 46, 54, 52, 56, 60); c.bezierCurveTo(62, 44, 64, 28, 60, 8); c.closePath(); c.fill(); cut(c, () => { c.beginPath(); c.moveTo(60, 62); c.bezierCurveTo(72, 76, 76, 88, 70, 98); c.bezierCurveTo(64, 106, 54, 106, 50, 98); c.bezierCurveTo(46, 88, 54, 80, 60, 62); c.closePath(); c.fill(); }); },
+  cro: (c) => { poly(c, [16, 40, 38, 64, 60, 22, 82, 64, 104, 40, 94, 92, 26, 92]); rr(c, 26, 96, 68, 12, 3); circ(c, 16, 36, 7); circ(c, 60, 18, 7); circ(c, 104, 36, 7); cut(c, () => { circ(c, 42, 80, 5); circ(c, 60, 80, 5); circ(c, 78, 80, 5); }); },
   excuse: (c) => { rr(c, 24, 14, 64, 88, 6); cut(c, () => { for (let i = 0; i < 4; i++) rr(c, 34, 28 + i * 12, i === 3 ? 26 : 44, 5, 2); }); circ(c, 80, 88, 18); cut(c, () => ring(c, 80, 88, 12, 2.5)); },
   // founders
   f_founder: (c) => { bust(c); cut(c, () => poly(c, [56, 76, 64, 76, 66, 104, 60, 112, 54, 104])); poly(c, [57, 78, 63, 78, 64, 100, 60, 106, 56, 100]); },
@@ -274,7 +277,7 @@ export function stippleCanvas(id: string, ink = '#080809', SCALE = 3): HTMLCanva
       if (!inside(jx, jy)) continue;
       const edge = !inside(jx - 2.2, jy) || !inside(jx + 2.2, jy) || !inside(jx, jy - 2.2) || !inside(jx, jy + 2.2);
       // light from the top-left: denser shadow toward the bottom-right, plus a soft core highlight
-      const shade = 0.34 + 0.5 * ((jx + jy) / (2 * S)) + 0.12 * vnoise(jx / 9, jy / 9);
+      const shade = 0.58 + 0.38 * ((jx + jy) / (2 * S)) + 0.1 * vnoise(jx / 9, jy / 9);
       if (!edge && hash(jx * 1.3, jy * 2.1) > shade) continue;
       o.beginPath();
       o.arc(jx * SCALE, jy * SCALE, (edge ? 0.62 : 0.5) * SCALE, 0, 6.283);

@@ -45,7 +45,7 @@ export interface AuraCtx {
 export interface MultFx {
   /** +Mult (added). */
   add?: number;
-  /** ×Mult (multiplied, after this card's add). */
+  /** Ã—Mult (multiplied, after this card's add). */
   times?: number;
 }
 
@@ -281,7 +281,7 @@ export const CARDS: Record<string, CardDef> = {
   },
   proofwall: {
     id: 'proofwall', name: 'Payout Proof Wall', kind: 'staff', rarity: 'rare', draftWeight: 2,
-    blurb: '×Mult: +0.05 for every payout you have honoured this run.',
+    blurb: 'Ã—Mult: +0.05 for every payout you have honoured this run.',
     mult: ({ payoutsPaid }) => (payoutsPaid > 0 ? { times: round2(1 + 0.05 * payoutsPaid) } : null),
   },
   lawyer: {
@@ -303,7 +303,7 @@ export const CARDS: Record<string, CardDef> = {
   },
   cro: {
     id: 'cro', name: 'Chief Risk Officer', kind: 'staff', rarity: 'rare', draftWeight: 2,
-    blurb: '×2 Mult on any day nobody asks for a payout.',
+    blurb: 'Ã—2 Mult on any day nobody asks for a payout.',
     mult: ({ requests }) => (requests === 0 ? { times: 2 } : null),
   },
 };

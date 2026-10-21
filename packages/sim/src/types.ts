@@ -53,7 +53,7 @@ export interface ScoreEvent {
   fees?: number;
   /** +Mult this card added. */
   add?: number;
-  /** ×Mult this card applied. */
+  /** Ã—Mult this card applied. */
   times?: number;
   /** Fees and mult after this beat. */
   totalFees: number;
@@ -63,7 +63,7 @@ export interface ScoreEvent {
 export interface DayReport {
   day: number;
   candle: Candle;
-  /** Today's take: fees × mult, minus clawbacks. */
+  /** Today's take: fees Ã— mult, minus clawbacks. */
   income: number;
   /** Positive fees collected. */
   fees: number;
