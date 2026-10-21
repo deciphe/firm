@@ -18,7 +18,8 @@ When the doc and this file disagree, ask the user.
 - Engine: Phaser 3.90.0 (WebGL). The published page loads it from cdnjs
   (`https://cdnjs.cloudflare.com/ajax/libs/phaser/3.90.0/phaser.min.js`); local builds use the vendored copy in
   `apps/game/vendor/` with types in `apps/game/vendor/types/`. Phaser is a global; do not import it.
-- Everything renders in-engine: background paint-swirl shader (`src/engine/shaders.ts`), CRT post-process,
+- Everything renders in-engine: background paint-swirl shader (`src/engine/shaders.ts`), a light screen
+  finish (faint scanlines, vignette; no curvature or colour fringe at rest: the user found them blurry),
   springy cards (`src/engine/card.ts`), UI kit (`src/engine/ui.ts`), the whole game scene (`src/engine/scene.ts`).
   The canvas runs at device pixel ratio. Layout is in fixed design units (1600x900 table on computers,
   430-wide portrait on phones, height follows the phone); the camera zooms the design to fit any window

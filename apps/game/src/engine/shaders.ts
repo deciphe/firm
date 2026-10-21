@@ -51,7 +51,7 @@ void main() {
   gl_FragColor = vec4(col, 1.0);
 }`;
 
-/** CRT finish over the whole game: faint scanlines, slight curvature, colour fringe, vignette, grain. */
+/** Screen finish over the whole game: very faint scanlines, soft vignette, grain; colour fringe only while shaking. */
 const CRT_FRAG = `
 precision mediump float;
 uniform sampler2D uMainSampler;
@@ -62,28 +62,24 @@ uniform float uDpr;
 uniform float uShake;
 varying vec2 outTexCoord;
 
-vec2 curve(vec2 uv) {
-  uv = uv * 2.0 - 1.0;
-  vec2 o = abs(uv.yx) / vec2(14.0, 11.0);
-  uv = uv + uv * o * o;
-  return uv * 0.5 + 0.5;
-}
 float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
 
+// Crisp by default: no curvature (resampling blurred every pixel) and no colour fringe at rest.
+// The fringe only appears during screen shake, on money moments.
 void main() {
-  vec2 uv = curve(outTexCoord);
-  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
-  float ca = (0.00045 + uShake * 0.003);
+  vec2 uv = outTexCoord;
   vec2 dir = uv - 0.5;
-  float r = texture2D(uMainSampler, uv + dir * ca).r;
-  float g = texture2D(uMainSampler, uv).g;
-  float b = texture2D(uMainSampler, uv - dir * ca).b;
-  vec3 col = vec3(r, g, b);
+  vec3 col;
+  if (uShake > 0.02) {
+    float ca = uShake * 0.0025;
+    col = vec3(texture2D(uMainSampler, uv + dir * ca).r, texture2D(uMainSampler, uv).g, texture2D(uMainSampler, uv - dir * ca).b);
+  } else {
+    col = texture2D(uMainSampler, uv).rgb;
+  }
   float line = 0.5 + 0.5 * sin(uv.y * uResolution.y * 3.14159 / (1.5 * uDpr));
-  col *= 1.0 - 0.055 * line;
-  float v = 1.0 - dot(dir, dir) * 0.55;
-  col *= v;
-  col += (hash(uv * uResolution + uTime) - 0.5) * 0.018 * (1.0 - uStill);
+  col *= 1.0 - 0.02 * line;
+  col *= 1.0 - dot(dir, dir) * 0.35;
+  col += (hash(uv * uResolution + uTime) - 0.5) * 0.008 * (1.0 - uStill);
   gl_FragColor = vec4(col, 1.0);
 }`;
 
