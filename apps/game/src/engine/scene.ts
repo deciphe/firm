@@ -1472,10 +1472,10 @@ export class FirmScene extends Phaser.Scene {
       c.add(cons);
       y += cons.height / u(1) + 14;
       const bw = (w - 2 * pad - 10);
-      const pay = new Button(this, pad, y, bw * 0.58, 56, canPay ? 'PAY' : 'NO CASH', { ...STYLE.gold, size: 17, spacing: 3 });
+      const pay = new Button(this, pad, y, bw * 0.58, 56, canPay ? 'PAY' : 'NO CASH', { ...STYLE.gold, size: 17, spacing: 3, ...(canPay ? { sub: this.effect({ type: 'payout', decision: 'pay' }) } : {}) });
       pay.setEnabled(canPay);
       pay.onClick = () => { if (this.gate('pay')) void this.decide({ type: 'payout', decision: 'pay' }, 'PAID'); };
-      const stall = new Button(this, pad + bw * 0.58 + 10, y, bw * 0.42, 56, 'STALL 3 DAYS', { ...STYLE.dark, size: 11.5 });
+      const stall = new Button(this, pad + bw * 0.58 + 10, y, bw * 0.42, 56, 'STALL 3 DAYS', { ...STYLE.dark, size: 11.5, ...(canStall ? { sub: this.effect({ type: 'payout', decision: 'stall' }) } : {}) });
       stall.setEnabled(canStall);
       stall.onClick = () => { if (this.gate('stall')) void this.decide({ type: 'payout', decision: 'stall' }, 'STALLED'); };
       c.add([pay, stall]);
@@ -1490,26 +1490,29 @@ export class FirmScene extends Phaser.Scene {
       ex.forEach((e, k) => {
         const exDef = EXCUSES[e];
         const used = s.stats.excuseUses[e] ?? 0;
-        const bx = pad + (k % 2) * (ew + 10), by = y + Math.floor(k / 2) * 72;
+        const bx = pad + (k % 2) * (ew + 10), by = y + Math.floor(k / 2) * 86;
         const b = this.add.container(u(bx), u(by));
         const g = this.add.graphics();
-        roundRect(g, 0, 0, ew, 64, 12, C.clay, 0.08);
-        strokeRect(g, 0, 0, ew, 64, 12, C.clay, 1, 0.35);
-        b.add([g, text(this, 12, 10, exDef?.name ?? e, { size: 12.5, weight: 800, color: H.blush }), text(this, 12, 30, `${exDef?.blurb ?? ''}${used ? ` Used ${used}×.` : ''}`, { size: 10.5, weight: 600, color: H.muted, wrap: ew - 24 })]);
-        b.setSize(u(ew), u(64));
-        b.setInteractive(new Phaser.Geom.Rectangle(0, 0, u(ew), u(64)), Phaser.Geom.Rectangle.Contains);
+        roundRect(g, 0, 0, ew, 78, 12, C.clay, 0.08);
+        strokeRect(g, 0, 0, ew, 78, 12, C.clay, 1, 0.35);
+        const fx = this.effect({ type: 'payout', decision: 'deny', excuse: e });
+        b.add([g, text(this, 12, 10, exDef?.name ?? e, { size: 12.5, weight: 800, color: H.blush }), text(this, 12, 29, `${exDef?.blurb ?? ''}${used ? ` Used ${used}×.` : ''}`, { size: 10.5, weight: 600, color: H.muted, wrap: ew - 24 }),
+          text(this, 12, 60, fx, { size: 10.5, weight: 800, color: fx.includes('−') || fx.includes('ENDS') ? H.clay : H.gold, spacing: 0.4 })]);
+        freeze(g, { x: -1, y: -1, w: ew + 2, h: 80 });
+        b.setSize(u(ew), u(78));
+        b.setInteractive(new Phaser.Geom.Rectangle(0, 0, u(ew), u(78)), Phaser.Geom.Rectangle.Contains);
         b.input && (b.input.cursor = 'pointer');
         b.on('pointerup', () => { if (this.gate('deny')) void this.decide({ type: 'payout', decision: 'deny', excuse: e }, excuseDef(e).stallDays ? 'IN REVIEW' : 'DENIED'); });
         c.add(b);
-        rects[`deny${k}`] = { x: bx, y: by, w: ew, h: 64 };
+        rects[`deny${k}`] = { x: bx, y: by, w: ew, h: 78 };
       });
       if (!ex.length) c.add(text(this, pad, y, 'No excuses in hand.', { size: 12, weight: 600, color: H.muted }));
-      y += Math.max(1, Math.ceil(ex.length / 2)) * 72 + 4;
-      const ghost = new Button(this, pad, y, w - 2 * pad, 42, 'GHOST THEM', { ...STYLE.ghost, size: 11.5, sub: 'no excuse · big Trust and Heat hit' });
+      y += Math.max(1, Math.ceil(ex.length / 2)) * 86 + 4;
+      const ghost = new Button(this, pad, y, w - 2 * pad, 44, 'GHOST THEM', { ...STYLE.ghost, size: 11.5, sub: `no excuse · ${this.effect({ type: 'payout', decision: 'deny' })}` });
       ghost.onClick = () => { if (this.gate('deny')) void this.decide({ type: 'payout', decision: 'deny' }, 'GHOSTED'); };
       c.add(ghost);
-      rects.ghost = { x: pad, y, w: w - 2 * pad, h: 42 };
-      return y + 42 + pad + 8;
+      rects.ghost = { x: pad, y, w: w - 2 * pad, h: 44 };
+      return y + 44 + pad + 8;
     });
     for (const [k, r] of Object.entries(rects)) this.hit(k, m.x, m.y, r);
     const counter = { v: 0 };
@@ -1518,6 +1521,21 @@ export class FirmScene extends Phaser.Scene {
     const cv = cardView as CardView | null;
     if (cv) { cv.setScale(0.5); cv.sc.x = 0.5; cv.sc.target = 1; cv.rot.kick(6); }
     this.emit('payout-open');
+  }
+
+  /** What an action would do, worked out by the sim itself on a copy: "Trust −0.90 · Heat +12". */
+  private effect(a: Action): string {
+    const s = this.ui.s;
+    let n: GameState;
+    try { n = step(s, a); } catch { return ''; }
+    if (n.phase === 'dead') return n.cause === 'trust' ? 'ENDS THE FIRM: Trust hits 0' : 'ENDS THE FIRM: Heat hits 100';
+    const parts: string[] = [];
+    const sign = (v: number, d = 0): string => `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(d)}`;
+    const dc = n.cash - s.cash, dt = n.trust - s.trust, dh = n.heat - s.heat;
+    if (Math.abs(dc) >= 1) parts.push(`${dc >= 0 ? '+' : '−'}$${Math.abs(Math.round(dc)).toLocaleString('en-US')}`);
+    if (Math.abs(dt) >= 0.005) parts.push(`Trust ${sign(dt, 2)}`);
+    if (Math.abs(dh) >= 0.5) parts.push(`Heat ${sign(dh)}`);
+    return parts.length ? parts.join(' · ') : 'no Trust lost';
   }
 
   private async decide(a: Action, stampText: string): Promise<void> {

@@ -429,6 +429,14 @@ test('denying a clean trader costs Trust and Heat', () => {
   assert.equal(s.heat, BALANCE.denyHeat);
 });
 
+test('ghosting a clean trader costs more Trust and Heat than any excuse', () => {
+  const base = (): GameState => tap(setup({ 0: card(100, 'grinder', { progress: 9 }) }, 'chop'));
+  const ghost = step(base(), { type: 'payout', decision: 'deny' });
+  const excuse = step(base(), { type: 'payout', decision: 'deny', excuse: 'terms' });
+  assert.ok(ghost.trust < excuse.trust);
+  assert.ok(ghost.heat > excuse.heat);
+});
+
 test('denying exposed fraud with evidence builds Trust', () => {
   let s = tap(setup({ 0: card(100, 'hedger', { progress: 10, revealed: true }) }, 'chop'));
   s = step(s, { type: 'payout', decision: 'deny', excuse: 'terms' });

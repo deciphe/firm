@@ -42,6 +42,9 @@ export const BALANCE = {
   /** Denying a clean trader with an excuse. */
   denyTrust: 0.9,
   denyHeat: 12,
+  /** Ghosting (denying with no excuse): always worse than any excuse. */
+  ghostTrust: 1.3,
+  ghostHeat: 16,
   /** Mult gained or lost per point of Trust away from 3. */
   trustSlope: 0.3,
 };
@@ -537,8 +540,8 @@ function decidePayout(s: GameState, rng: Rng, decision: 'pay' | 'stall' | 'deny'
     s.grid[index] = null;
     s.stats.denied += req.amount;
     s.stats.payoutsDenied += 1;
-    loseTrust(s, (def.fraud && card.revealed ? 0.1 : 0.7) * (s.founder === 'saint' ? 2 : 1));
-    addHeat(s, 14 * heatMul);
+    loseTrust(s, (def.fraud && card.revealed ? 0.1 : BALANCE.ghostTrust) * (s.founder === 'saint' ? 2 : 1));
+    addHeat(s, BALANCE.ghostHeat * heatMul);
     post(s, rng.pick(['@fundedfrank', '@nq_nate', '@chartcrime']), `Payout request ignored. Account closed. No email, nothing.`, 'bad');
   } else {
     need(s.excuses.includes(excuse), 'no such excuse in hand');
