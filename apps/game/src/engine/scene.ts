@@ -1,5 +1,5 @@
 import {
-  BALANCE, CARDS, CRISES, EXCUSES, FOUNDERS, PLANS, STAKES, cardDef, displayName, excuseDef, expectedTake, findCard, legalActions, newRun, offerPrice, payrollGrowth, planCost, previewPlacement, rerollPrice, seedFromString, step, trustMultiplier, valuation,
+  BALANCE, CARDS, CRISES, EXCUSES, FOUNDERS, PLANS, STAKES, valuationParts, cardDef, displayName, excuseDef, expectedTake, findCard, legalActions, newRun, offerPrice, payrollGrowth, planCost, previewPlacement, rerollPrice, seedFromString, step, trustMultiplier, valuation,
 } from '@firm/sim';
 import type { Action, Candle, CardInstance, GameState, Offer } from '@firm/sim';
 import * as J from '../juice.ts';
@@ -318,6 +318,12 @@ export class FirmScene extends Phaser.Scene {
     return t;
   }
 
+  /** An invisible tappable area on the HUD (opens an explainer). */
+  private tapZone(x: number, y: number, w: number, h: number, fn: () => void): void {
+    const z = this.add.zone(x, y, w, h).setOrigin(0).setDepth(DEPTH.hud + 1).setInteractive({ useHandCursor: true });
+    z.on('pointerup', () => { if (!this.busy && !this.overlay && !this.guideNow) { J.tick(); fn(); } });
+  }
+
   /** Small score pill (fees / mult): a container so it can bump. */
   private scorePill(x: number, y: number, w: number, h: number, fill: number, deep: number, ink: string, key: string, size: number): Phaser.GameObjects.Container {
     const c = this.add.container(x + w / 2, y + h / 2).setDepth(DEPTH.hud + 1);
@@ -408,6 +414,8 @@ export class FirmScene extends Phaser.Scene {
     this.label('best', x0 + w - 16, y + 14, '', { size: 11, weight: 800, color: H.goldDeep, spacing: 1.2 }).setOrigin(1, 0);
     this.label('val', x0 + 15, y + 34, '$0', { size: 34, weight: 800 });
     this.hits.val = { x: x0, y, w, h: vh };
+    this.tapZone(x0, y, w, vh, () => this.showValuation());
+    this.label('valHint', x0 + w - 16, y + 62, 'HOW? ›', { size: 10, weight: 800, color: H.muted, spacing: 1.2 }).setOrigin(1, 0);
     y += vh + 14;
     // small stats
     const sw = (w - 16) / 3;
@@ -473,6 +481,7 @@ export class FirmScene extends Phaser.Scene {
     const tv = new Num(this, 0, 0, '+$0', { size: 20, weight: 800 }).setOrigin(0, 0.5);
     this.todayBox.add(tv); this.hud.today = tv; this.boxSprings.today = new Spring(1, 1, 380, 16);
     this.hits.score = { x: S.x, y: S.y, w: 230, h: S.h };
+    this.tapZone(S.x, S.y, 230, S.h, () => this.showValuation());
   }
 
   private renderHud(): void {
@@ -1538,17 +1547,72 @@ export class FirmScene extends Phaser.Scene {
       if (card.bonus) rows.push(['Upsold', `+${card.bonus} a day`]);
       rows.push(['On the book', `${card.age} day${card.age === 1 ? '' : 's'}`]);
       if (card.payouts) rows.push(['Payouts so far', String(card.payouts)]);
+      const did = this.ui.s.lastReport?.events.filter((e) => e.uid === card.uid) ?? [];
+      if (this.ui.s.lastReport) {
+        const parts = did.map((e) => (e.fees !== undefined ? `${e.fees >= 0 ? '+' : '−'}$${Math.abs(e.fees)} fees` : e.times !== undefined ? `×${e.times} Mult` : `+${e.add} Mult`));
+        rows.unshift(['Yesterday', parts.length ? parts.join(', ') : 'nothing']);
+      }
       for (const [k, v] of rows) {
         c.add(text(this, pad, y, k, { size: 12.5, weight: 600, color: H.muted }));
         c.add(text(this, w - pad, y, v, { size: 12.5, weight: 800 }).setOrigin(1, 0));
         y += 24;
       }
       y += 6;
-      const close = new Button(this, pad, y, w - 2 * pad, 46, 'CLOSE', { ...STYLE.dark, size: 12 });
+      // letting someone go frees the slot (closing a funded account is noticed)
+      const slot = this.ui.s.grid.findIndex((x) => x?.uid === card.uid);
+      const canGo = legalActions(this.ui.s).some((a) => a.type === 'release' && a.slot === slot);
+      const half = (w - 2 * pad - 10) / 2;
+      const go = new Button(this, pad, y, half, 46, `LET GO · ${money(BALANCE.severance)}`, { ...STYLE.ghost, stroke: C.clayDeep, size: 11, ...(card.def === 'vet' ? { sub: '−Trust' } : {}) });
+      go.setEnabled(canGo && this.ui.mode !== 'tutorial');
+      go.onClick = () => {
+        this.closeOverlay();
+        J.denied();
+        this.act({ type: 'release', slot }, `${displayName(card)} let go`);
+        this.burst?.explode(14, this.slotPos(slot).x, this.slotPos(slot).y);
+      };
+      const close = new Button(this, pad + half + 10, y, half, 46, 'CLOSE', { ...STYLE.dark, size: 12 });
       close.onClick = () => this.closeOverlay();
-      c.add(close);
+      c.add([go, close]);
       return y + 46 + pad + 6;
     });
+    (this.overlay?.list[0] as Phaser.GameObjects.Rectangle | undefined)?.on('pointerup', () => this.closeOverlay());
+  }
+
+  /** How valuation (the score) is worked out, line by line. */
+  showValuation(): void {
+    const s = this.ui.s;
+    const v = valuationParts(s);
+    const pad = 20;
+    this.modal('val', 470, (c, w) => {
+      let y = pad;
+      c.add(text(this, pad, y, 'VALUATION · YOUR SCORE', { size: 11, weight: 800, color: H.muted, spacing: 2 }));
+      y += 28;
+      c.add(text(this, pad, y, 'What a buyer would pay for the firm today. Your score is the peak.', { size: 13, weight: 600, color: H.paper, wrap: w - 2 * pad }));
+      y += 44;
+      const rows: [string, string, string][] = [
+        ['Earnings', `20 days × ${money(v.avgTake)} a day × reputation ${v.reputation.toFixed(2)}`, money(v.earnings)],
+        ['Payouts honoured', `half of ${money(s.stats.paid)} paid to traders`, `+${money(v.payouts)}`],
+        ['Cash', `a quarter of ${money(s.cash)}`, `+${money(v.cash)}`],
+        ['Funded book', 'what traders near payout could claim', `−${money(v.liability)}`],
+      ];
+      for (const [k, sub, val] of rows) {
+        c.add(text(this, pad, y, k, { size: 14, weight: 800 }));
+        c.add(text(this, pad, y + 20, sub, { size: 11.5, weight: 600, color: H.muted, wrap: w - 2 * pad - 110 }));
+        c.add(new Num(this, w - pad, y, val, { size: 16, weight: 800, color: val.startsWith('−') ? H.clay : H.paper }).setOrigin(1, 0));
+        y += 52;
+      }
+      const g = this.add.graphics(); g.fillStyle(C.line2, 1); g.fillRect(pad, y, w - 2 * pad, 1); c.add(g);
+      y += 12;
+      c.add(text(this, pad, y + 4, 'VALUATION', { size: 12, weight: 800, color: H.muted, spacing: 1.6 }));
+      c.add(new Num(this, w - pad, y, money(valuation(s)), { size: 24, weight: 800, color: H.gold }).setOrigin(1, 0));
+      y += 40;
+      c.add(text(this, pad, y, 'Reputation is (Trust ÷ 3)². A firm that stiffs its traders is worth less than a smaller honest one.', { size: 11.5, weight: 600, color: H.muted, wrap: w - 2 * pad }));
+      y += 44;
+      const close = new Button(this, pad, y, w - 2 * pad, 46, 'GOT IT', { ...STYLE.dark, size: 12 });
+      close.onClick = () => this.closeOverlay();
+      c.add(close);
+      return y + 46 + pad + 4;
+    }, { center: true });
     (this.overlay?.list[0] as Phaser.GameObjects.Rectangle | undefined)?.on('pointerup', () => this.closeOverlay());
   }
 

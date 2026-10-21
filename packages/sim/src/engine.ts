@@ -154,10 +154,23 @@ export function liability(s: GameState): number {
  * what the funded book could claim. A firm that stiffs everyone is worth less than a smaller honest one.
  */
 export function valuation(s: GameState): number {
+  const v = valuationParts(s);
+  return Math.max(0, v.earnings + v.payouts + v.cash - v.liability);
+}
+
+/** The pieces of valuation, for showing the player how it is worked out. */
+export function valuationParts(s: GameState): { avgTake: number; reputation: number; earnings: number; payouts: number; cash: number; liability: number } {
   const recent = s.stats.incomeHistory.slice(-5);
   const avg = recent.length ? recent.reduce((a, b) => a + b, 0) / recent.length : 0;
-  const rep = (s.trust / 3) ** 2;
-  return Math.max(0, Math.round(20 * Math.max(0, avg) * rep + 0.5 * s.stats.paid + 0.25 * s.cash - liability(s)));
+  const reputation = Math.round(((s.trust / 3) ** 2) * 100) / 100;
+  return {
+    avgTake: Math.round(avg),
+    reputation,
+    earnings: Math.round(20 * Math.max(0, avg) * (s.trust / 3) ** 2),
+    payouts: Math.round(0.5 * s.stats.paid),
+    cash: Math.round(0.25 * s.cash),
+    liability: liability(s),
+  };
 }
 
 /** The day's starting mult. Trust 3 = x1.0, 5 = x1.6, 1 = x0.4, 0 = x0.1. */
