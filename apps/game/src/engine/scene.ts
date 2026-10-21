@@ -1936,6 +1936,7 @@ export class FirmScene extends Phaser.Scene {
       cashout: () => self.showCashout(),
       layout: () => ({ W: self.L.W, H: self.L.H, k: self.L.k, fit: self.L.fit, wide: self.L.wide }),
       firstEmpty: () => self.ui.s.grid.findIndex((c) => c === null),
+      prices: () => self.ui.s.offers.map((o) => offerPrice(o, self.ui.s)),
       load: (seed: number) => { self.guideStop(); const u0 = freshUi('random'); u0.s = newRun(seed); u0.firm = firmName(seed); self.ui = u0; self.shownCash = u0.s.cash; self.closeOverlay(); self.build(); },
       set: (patch: Partial<GameState>) => { self.ui.s = { ...self.ui.s, ...patch }; self.shownCash = self.ui.s.cash; self.build(); },
       tutorial: () => self.newGame('tutorial'),

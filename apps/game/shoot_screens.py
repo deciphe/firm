@@ -1,13 +1,16 @@
 """Screenshot audit for the run structure: title, Open a Firm, Rolodex, payroll cash-out, quarter
 briefing (with and without a live crisis), the table mid-crisis, and the death card.
 Usage: python3 apps/game/shoot_screens.py [out_dir] [sizes like 1440x900,390x844]"""
-import json, sys, time
+import json, os, sys, time
+from pathlib import Path
 from playwright.sync_api import sync_playwright
 
-OUT = sys.argv[1] if len(sys.argv) > 1 else '/home/claude/firm/design/audits'
+ROOT = Path(__file__).resolve().parents[2]
+
+OUT = sys.argv[1] if len(sys.argv) > 1 else str(ROOT / 'design' / 'audits')
 SIZES = [tuple(map(int, s.split('x'))) for s in (sys.argv[2] if len(sys.argv) > 2 else '1440x900,390x844').split(',')]
-URL = 'file:///home/claude/firm/apps/game/dist/dev.html'
-ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist']
+URL = (ROOT / 'apps' / 'game' / 'dist' / 'dev.html').as_uri()
+ARGS = ['--use-angle=swiftshader', '--use-gl=angle', '--enable-unsafe-swiftshader'] if os.environ.get('FIRM_SWIFTSHADER') else ['--use-angle=d3d11', '--enable-gpu', '--ignore-gpu-blocklist']
 META = {'runs': 7, 'bestDays': 17, 'bestVal': 6120, 'totalPaid': 12, 'totalDenied': 4, 'crises': 1, 'maxStake': 2,
         'seen': ['gambler', 'grinder', 'retail', 'whale', 'affiliate', 'influencer', 'hedger', 'trendbro', 'x:terms', 'x:glitch', 'support'],
         'founder': 'founder', 'stake': 1, 'records': {'founder:1': 6120}}
@@ -15,7 +18,7 @@ META = {'runs': 7, 'bestDays': 17, 'bestVal': 6120, 'totalPaid': 12, 'totalDenie
 
 def run(p, w, h):
     mobile = w < 900
-    b = p.chromium.launch(args=ARGS)
+    b = p.chromium.launch(args=ARGS, channel=os.environ.get('FIRM_BROWSER', 'chrome'))
     pg = b.new_page(viewport={'width': w, 'height': h}, device_scale_factor=2 if mobile else 1, has_touch=mobile, is_mobile=mobile)
     errs = []
     pg.on('pageerror', lambda e: errs.append(str(e)))

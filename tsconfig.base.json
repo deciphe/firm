@@ -14,9 +14,6 @@
     "noEmit": true,
     "types": [
       "node"
-    ],
-    "typeRoots": [
-      "/opt/npm-tools/node_modules/@types"
     ]
   }
 }

@@ -5,6 +5,18 @@
   "scripts": {
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
-    "bots": "pnpm --filter @firm/bots run balance"
-  }
+    "bots": "pnpm --filter @firm/bots run balance",
+    "build": "node apps/game/build.mjs",
+    "build:desktop": "node apps/game/build.mjs --desktop",
+    "lint": "eslint .",
+    "format": "prettier --write ."
+  },
+  "devDependencies": {
+    "typescript": "5.6.3",
+    "tsx": "4.19.2",
+    "@types/node": "20.17.6",
+    "esbuild": "0.24.0",
+    "@fontsource/manrope": "5.1.0"
+  },
+  "packageManager": "pnpm@9.15.9"
 }

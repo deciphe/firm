@@ -6,8 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
-let esbuild;
-try { esbuild = require('esbuild'); } catch { esbuild = require('/opt/npm-tools/node_modules/esbuild'); }
+const esbuild = require('esbuild');
 
 const result = await esbuild.build({
   entryPoints: [resolve(here, 'src/main.ts')],

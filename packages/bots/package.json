@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "balance": "tsx src/balance.ts",
+    "trace": "tsx src/trace.ts",
     "typecheck": "tsc -p tsconfig.json",
     "test": "echo no tests"
   },
