@@ -80,9 +80,9 @@ def compare(name, img):
     if ref.size != img.size:
         return f'FAIL size {img.size} vs {ref.size}'
     diff = ImageChops.difference(ref, img)
-    hist = diff.convert('L').point(lambda v: 255 if v > 40 else 0).histogram()
+    hist = diff.convert('L').point(lambda v: 255 if v > 20 else 0).histogram()
     changed = hist[255] / (img.size[0] * img.size[1])
-    if changed > 0.004:
+    if changed > 0.0005:
         (BASE / 'diff').mkdir(parents=True, exist_ok=True)
         img.save(BASE / 'diff' / f'{name}-now.png')
         diff.point(lambda v: min(255, v * 4)).save(BASE / 'diff' / f'{name}-diff.png')

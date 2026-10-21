@@ -271,7 +271,10 @@ export class FirmScene extends Phaser.Scene {
     const moves = desperate ? { x: mx, y: cta.y - 62, w, h: 54 } : null;
     const gap = 6;
     const gy = 352, gb = (moves ? moves.y : cta.y) - 12;
-    const { grid, cw, ch } = fitGrid({ x: mx, y: gy, w, h: gb - gy }, gap, 1.34);
+    // phone cards stretch to fill the height (taller cards, bigger art, no dead strip above the book)
+    const cwP = (w - 4 * gap) / 5;
+    const ratio = Math.max(1.34, Math.min(1.62, (gb - gy - 3 * gap) / 4 / cwP));
+    const { grid, cw, ch } = fitGrid({ x: mx, y: gy, w, h: gb - gy }, gap, ratio);
     const gridDraft = { ...grid, y: 112 };
     const sy = gridDraft.y + gridDraft.h + 10;
     const shopPanel = { x: 0, y: sy, w: W, h: Hh - sy };
@@ -355,6 +358,11 @@ export class FirmScene extends Phaser.Scene {
     const how = new Button(this, x0 + w - (big ? 124 : 112), y, big ? 44 : 38, bh, '?', { ...STYLE.dark, size: 14, spacing: 0 }).setDepth(DEPTH.hud + 2);
     how.onClick = () => this.showHow();
     this.hits.how = { x: x0 + w - (big ? 124 : 112), y, w: big ? 44 : 38, h: bh };
+    // game speed: 1x / 2x / 3x, remembered
+    const sx = x0 + w - (big ? 176 : 158), sw = big ? 46 : 40;
+    const spd = new Button(this, sx, y, sw, bh, `${this.speed}×`, { ...STYLE.dark, size: 12, spacing: 0 }).setDepth(DEPTH.hud + 2);
+    spd.onClick = () => { this.speed = this.speed >= 3 ? 1 : this.speed + 1; store('speed', this.speed); spd.setLabel(`${this.speed}×`); J.tick(this.speed); };
+    this.hits.speed = { x: sx, y, w: sw, h: bh };
     const snd = new Button(this, x0 + w - (big ? 72 : 68), y, big ? 72 : 68, bh, J.isMuted() ? 'MUTED' : 'SOUND', { ...STYLE.dark, size: 10.5, spacing: 1 }).setDepth(DEPTH.hud + 2);
     snd.onClick = () => { J.unlockAudio(); J.setMuted(!J.isMuted()); store('muted', J.isMuted()); snd.setLabel(J.isMuted() ? 'MUTED' : 'SOUND'); };
   }
@@ -502,7 +510,7 @@ export class FirmScene extends Phaser.Scene {
     if (firmT) {
       const full = this.ui.firm;
       firmT.setText(full);
-      const max = L.wide ? 200 : L.W - 28 - 82 - 120;
+      const max = L.wide ? 200 : L.W - 28 - 82 - 166;
       let cut = full;
       while (firmT.width > max && cut.length > 4) { cut = cut.slice(0, -1); firmT.setText(`${cut.trimEnd()}…`); }
     }
@@ -1101,7 +1109,7 @@ export class FirmScene extends Phaser.Scene {
       this.time.delayedCall(2400, () => this.fire?.stop());
       this.toast('Record day');
     }
-    this.animateCash(prev.cash, next.cash, this.fast ? 200 : 520);
+    this.animateCash(prev.cash, next.cash, this.fast ? 200 : 520 / this.speed);
     await this.beat(560);
     this.tweens.add({ targets: banner, alpha: 0, duration: 160, onComplete: () => banner.destroy() });
 
@@ -1127,8 +1135,10 @@ export class FirmScene extends Phaser.Scene {
   }
 
   /** Wait one beat of the scoring; a tap or space during the count speeds it up. */
-  private beat(ms: number): Promise<void> { return J.wait(this.fast ? Math.min(ms, 28) : ms); }
+  private beat(ms: number): Promise<void> { return J.wait(this.fast ? Math.min(ms, 28) : ms / this.speed); }
   private fast = false;
+  /** Game speed (1-3), saved between sessions. */
+  private speed = Math.max(1, Math.min(3, store<number>('speed') ?? 1));
 
   /** Print today's candle in the market strip: it grows with ticks, then lands. The book stays in view. */
   private async printCandle(c: Candle): Promise<Phaser.GameObjects.Container> {
@@ -1160,7 +1170,7 @@ export class FirmScene extends Phaser.Scene {
     for (let t = 0; t < ticks; t++) {
       draw(6 + (t % 2 ? hMax * 0.55 : hMax * 0.2), C.muted);
       J.tick(t);
-      await J.wait(70);
+      await this.beat(70);
     }
     const color = CANDLE_COLOR[c];
     draw(c === 'chop' ? hMax * 0.25 : c === 'news' ? hMax * 0.95 : hMax * 0.7, color);

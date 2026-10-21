@@ -91,7 +91,7 @@ You must look at what you build before calling it done.
 
 Hard mode is the design: every decision counts from day 1. Hires cost cash (common $40, uncommon $85,
 rare $160, excuse $45), rerolls cost $20 and rise $10 each time in the same shop. Start cash $120, first
-payroll $760, payroll grows x1.6 per cycle. Latest 10,000-game run per bot is in `design/balance-v4.txt`
+payroll $760, payroll grows x1.6 per cycle. Latest 10,000-game run per bot is in `design/balance-v5.txt`
 (`pnpm bots`, runs on every core in ~2.5 min; `pnpm --filter @firm/bots trace SEED BOT` logs one run).
 
 Scoring is Balatro's: traders pay fees (blue chips) in reading order, then every card with a mult effect
