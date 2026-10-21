@@ -288,3 +288,11 @@ export function stippleCanvas(id: string, ink = '#080809', SCALE = 3): HTMLCanva
 }
 
 export const ART_IDS = Object.keys(ART);
+
+/** Draw a card's silhouette (black on transparent) into a 120x120 canvas context. */
+export function drawShape(id: string, c: CanvasRenderingContext2D): void {
+  const draw = ART[id] ?? ART.retail;
+  c.fillStyle = '#000'; c.strokeStyle = '#000';
+  draw?.(c);
+}
+export const SHAPE_SIZE = S;

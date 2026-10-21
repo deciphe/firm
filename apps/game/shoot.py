@@ -50,9 +50,11 @@ def run(p, w, h):
             v = view()
             if v['hint'] == hint:
                 return True
-            if v['guide'] and not v['wait']:
+            if v['guide'] and not v['wait'] and pg.evaluate("!!__firm.rect('next')"):
                 pg.wait_for_timeout(250)
-                click('next'); click('next')
+                click('next')
+                if pg.evaluate("!!__firm.rect('next')") and view()['guide'] and not view()['wait']:
+                    click('next')
             pg.wait_for_timeout(350)
         return False
 

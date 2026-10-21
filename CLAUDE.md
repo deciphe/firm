@@ -23,7 +23,7 @@ When the doc and this file disagree, ask the user.
   The canvas runs at device pixel ratio. Layout is in fixed design units (1600x900 table on computers,
   430-wide portrait on phones, height follows the phone); the camera zooms the design to fit any window
   and the paint swirl fills the rest. `__firm.rect()` returns CSS px for clicking.
-- Sound is synthesised with Web Audio (`src/juice.ts`). Card art is generated stipple (`src/stipple.ts`).
+- Sound is synthesised with Web Audio (`src/juice.ts`). Card art is generated pixel sprites (`src/pixel.ts`).
 - esbuild bundles the game (`apps/game/build.mjs`) into `dist/firm.html` (published) and `dist/dev.html` (local).
 - Tests: `node:test` via `tsx --test`. `apps/game/shoot.py` plays the game through real canvas clicks
   (`__firm.rect(name)`, `__firm.view()`) and screenshots every key state.
@@ -120,7 +120,9 @@ Balatro's table, in the Flat MASSIVE language with Claude's warmth.
   main action and the mult box, soft steel blue #86a9d4 for the fees box.
 - Type: Manrope everywhere (loaded from Google Fonts; Inter is the local fallback), tabular numbers.
 - Background: Balatro-style flowing paint swirl in ink, deep felt green and clay, chunky pixels, CRT finish.
-  Every card face is a stippled ink illustration generated from simple shapes. No cartoon faces.
+  Every card's art is a chunky 24x24 pixel sprite (outlined, lit top-left) on its own coloured, striped
+  tile (`src/pixel.ts`; silhouettes come from the shape library in `src/stipple.ts`). No cartoon faces.
+  (The user rejected the old stippled-dot art on 2026-10-21: it read as weird dots.)
 - Juice: cards sway, jump and pop blue fee chips and clay mult chips in order; the boxes bump; Today
   catches fire on record days; payout cards flip and get stamped. Juice only on money moments.
 

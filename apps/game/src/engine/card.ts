@@ -1,6 +1,6 @@
 import { cardDef, displayName } from '@firm/sim';
 import type { CardInstance } from '@firm/sim';
-import { stippleCanvas } from '../stipple.ts';
+import { pixelArt } from '../pixel.ts';
 import { C, H } from './theme.ts';
 import { Spring, bakeShape, roundRect, strokeRect, text } from './ui.ts';
 
@@ -43,7 +43,10 @@ export function cardLook(card: CardInstance): CardLook {
 /** Card art as a Phaser texture, generated once per id. */
 export function artTexture(scene: Phaser.Scene, id: string): string {
   const key = `art:${id}`;
-  if (!scene.textures.exists(key)) scene.textures.addCanvas(key, stippleCanvas(id, '#080809', 4));
+  if (!scene.textures.exists(key)) {
+    scene.textures.addCanvas(key, pixelArt(id, 8));
+    scene.textures.get(key).setFilter(Phaser.Textures.FilterMode.NEAREST);
+  }
   return key;
 }
 
