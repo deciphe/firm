@@ -39,16 +39,41 @@ export interface FeedPost {
 
 export interface CardResult {
   uid: number;
-  /** Fee before staff, influencers and Trust. */
+  /** The card's own fee, before neighbours boosted it. */
   base: number;
+  /** Fees after neighbours (negative: a chargeback). */
   cash: number;
   progress: number;
+}
+
+/** One beat of the day's scoring, in the order it should be shown. */
+export interface ScoreEvent {
+  uid: number;
+  /** Fees this card added (blue chips; negative is a clawback). */
+  fees?: number;
+  /** +Mult this card added. */
+  add?: number;
+  /** ×Mult this card applied. */
+  times?: number;
+  /** Fees and mult after this beat. */
+  totalFees: number;
+  mult: number;
 }
 
 export interface DayReport {
   day: number;
   candle: Candle;
+  /** Today's take: fees × mult, minus clawbacks. */
   income: number;
+  /** Positive fees collected. */
+  fees: number;
+  /** Chargebacks clawed back (zero or negative). */
+  clawback: number;
+  /** Starting mult (from Trust). */
+  baseMult: number;
+  /** Final mult. */
+  mult: number;
+  events: ScoreEvent[];
   results: CardResult[];
   requests: number;
   spawned: number[];
@@ -125,4 +150,5 @@ export type Action =
   | { type: 'payout'; decision: PayoutDecision; excuse?: string }
   | { type: 'draft'; pick: number | null; slot?: number }
   | { type: 'reroll' }
+  | { type: 'release'; slot: number }
   | { type: 'plan'; id: string };

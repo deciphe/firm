@@ -10,7 +10,7 @@ for (let k = 0; k < 3000 && s.phase !== 'dead'; k++) {
   if (a.type === 'tap') {
     const r = s.lastReport!;
     const grid = s.grid.filter(Boolean).map((c) => cardDef(c!.def).name.slice(0, 6)).join(',');
-    console.log(`d${String(prev.day).padStart(2)} ${r.candle.padEnd(4)} +${String(r.income).padStart(5)} cash ${String(s.cash).padStart(6)} pay ${s.payroll.amount}@${s.payroll.dueDay} T${s.trust.toFixed(1)} H${Math.round(s.heat)} req${r.requests} [${grid}]`);
+    console.log(`d${String(prev.day).padStart(2)} ${r.candle.padEnd(4)} +${String(r.income).padStart(5)} cash ${String(s.cash).padStart(6)} pay ${s.payroll.amount}@${s.payroll.dueDay} T${s.trust.toFixed(1)} H${Math.round(s.heat)} V${valuation(s)} req${r.requests} [${grid}]`);
   } else if (a.type !== 'draft' || a.pick !== null) console.log('     ', JSON.stringify(a), a.type === 'draft' ? JSON.stringify(prev.offers[a.pick!]) : '', 'cash', s.cash);
 }
 console.log('DEAD', s.cause, 'day', s.day, 'short', s.shortBy, 'peak', s.stats.peakValuation);

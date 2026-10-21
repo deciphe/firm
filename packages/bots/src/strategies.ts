@@ -1,4 +1,4 @@
-import { BALANCE, CARDS, EXCUSES, emptySlots, findCard, legalActions, neighborsOf, offerPrice, rerollPrice } from '@firm/sim';
+import { BALANCE, CARDS, EXCUSES, emptySlots, expectedTake, findCard, legalActions, neighborsOf, offerPrice, previewPlacement, rerollPrice } from '@firm/sim';
 import type { Action, GameState, Offer } from '@firm/sim';
 import { makeRng } from '@firm/sim';
 import type { Rng } from '@firm/sim';
@@ -12,11 +12,6 @@ function seenId(defId: string, revealed = false): string {
   const def = CARDS[defId];
   return !revealed && def?.disguise ? 'retail' : defId;
 }
-
-const FEE: Record<string, number> = {
-  gambler: 28, retail: 24, scalper: 16, trendbro: 22, whale: 95, grinder: 12,
-  copyring: 18, hedger: 22, ghost: 28, chargeback: 25, bot: 12, vet: 0, influencer: 0, botfarm: 30,
-};
 
 function avgIncome(s: GameState): number {
   const h = s.stats.incomeHistory.slice(-3);
@@ -70,33 +65,22 @@ function payoutDecision(s: GameState, prefer: 'pay' | 'deny' | 'smart' | 'greedy
 
 // ------------------------------------------------------------------ placement
 
-function slotValue(s: GameState, slot: number, offerId: string): number {
+/** What a card is worth beyond today's take (dollars a day, roughly): safety, Trust, payout risk. */
+function extraValue(s: GameState, slot: number, id: string): number {
   const ns = neighborsOf(slot).map((i) => s.grid[i] ?? null);
-  const fees = (c: (typeof ns)[number]): number => (c ? FEE[seenId(c.def, c.revealed)] ?? 0 : 0);
-  switch (offerId) {
-    case 'affiliate': return ns.reduce((t, c) => t + (c && ['gambler', 'retail', 'trendbro'].includes(seenId(c.def, c.revealed)) ? fees(c) * 0.5 : 0), 0);
-    case 'influencer': return ns.reduce((t, c) => t + fees(c), 0) - 20;
-    case 'discordmod': return 10 * ns.filter((c) => c?.def === 'grinder' || c?.def === 'vet').length;
+  switch (id) {
+    case 'grinder': return 6;
+    case 'whale': return -40;
     case 'riskanalyst': {
       const r = Math.floor(slot / BALANCE.cols);
-      return 12 * s.grid.slice(r * BALANCE.cols, r * BALANCE.cols + BALANCE.cols).filter((c) => c && !c.revealed && CARDS[c.def]?.disguise).length;
+      return 10 * s.grid.slice(r * BALANCE.cols, r * BALANCE.cols + BALANCE.cols).filter((c) => c && !c.revealed && CARDS[c.def]?.disguise).length;
     }
     case 'support': return 8 + 10 * ns.filter((c) => c && seenId(c.def, c.revealed) === 'retail').length;
     case 'compliance': return 6 * ns.filter((c) => c && CARDS[c.def]?.payout).length;
     case 'closer': return ns.some((c) => c === null) ? 22 : 0;
     case 'detector': return 10 * s.grid.filter((c) => c?.def === 'copyring' || c?.def === 'bot').length;
     case 'lawyer': return 6;
-    default: {
-      // a trader: base fee, plus bonuses from staff/influencers already next to it
-      let v = FEE[seenId(offerId)] ?? 10;
-      for (const c of ns) {
-        if (c?.def === 'influencer') v += FEE[seenId(offerId)] ?? 0;
-        if (c?.def === 'affiliate' && ['gambler', 'retail', 'trendbro'].includes(seenId(offerId))) v += (FEE[seenId(offerId)] ?? 0) * 0.5;
-      }
-      if (offerId === 'grinder') v += 6; // trust value
-      if (offerId === 'whale') v -= 40; // payout risk
-      return v;
-    }
+    default: return 0;
   }
 }
 
@@ -105,9 +89,12 @@ function bestPlacement(s: GameState, offer: Offer): { value: number; slot?: numb
   if (offer.id === 'botfarm') return { value: emptySlots(s).length >= 3 && s.heat < 40 ? 20 : -5 };
   const free = emptySlots(s);
   if (free.length === 0) return { value: -1 };
+  // The bot sees what a player sees: hidden fraud previews as a New Trader.
+  const id = seenId(offer.id);
+  const now = expectedTake(s);
   let best = { value: -Infinity, slot: free[0] as number };
   for (const slot of free) {
-    const v = slotValue(s, slot, offer.id);
+    const v = previewPlacement(s, id, slot) - now + extraValue(s, slot, id);
     if (v > best.value) best = { value: v, slot };
   }
   return best;
@@ -170,7 +157,8 @@ function quarter(s: GameState, smart: boolean): Action {
 // ------------------------------------------------------------------ bots
 
 export const BOTS: Record<string, Bot> = {
-  random: (s, rng) => pick(rng, legalActions(s)),
+  // Random play, but it doesn't fire staff for no reason (letting go is a deliberate move).
+  random: (s, rng) => pick(rng, legalActions(s).filter((a) => a.type !== 'release')),
   naive: (s) => (s.phase === 'quarter' ? quarter(s, false) : s.phase === 'morning' ? { type: 'tap' } : s.phase === 'payout' ? payoutDecision(s, 'pay') : naiveDraft(s)),
   alwaysPay: (s) => (s.phase === 'quarter' ? quarter(s, false) : s.phase === 'morning' ? morning(s, false) : s.phase === 'payout' ? payoutDecision(s, 'pay') : smartDraft(s)),
   alwaysDeny: (s) => (s.phase === 'quarter' ? quarter(s, false) : s.phase === 'morning' ? morning(s, false) : s.phase === 'payout' ? payoutDecision(s, 'deny') : smartDraft(s)),

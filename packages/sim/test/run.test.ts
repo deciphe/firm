@@ -43,14 +43,15 @@ test('every founder starts a legal run with their own twist', () => {
 
 test('the closer hires for 10% less', () => {
   const s = newRun(1, { founder: 'closer' });
-  assert.equal(offerPrice({ kind: 'card', id: 'detector' }, s), Math.round((BALANCE.prices.rare as number) * 0.9 / 5) * 5);
+  assert.equal(offerPrice({ kind: 'card', id: 'cro' }, s), Math.round((BALANCE.prices.rare as number) * 0.9 / 5) * 5);
 });
 
 test('the hustler gets more from a flash sale', () => {
   const a = step(newRun(1), { type: 'flashSale' });
   const b = step(newRun(1, { founder: 'hustler' }), { type: 'flashSale' });
-  assert.equal(a.cash - BALANCE.startCash, 200);
-  assert.equal(b.cash - BALANCE.startCash - 80, 300);
+  const sale = BALANCE.flashBase + BALANCE.flashStep;
+  assert.equal(a.cash - BALANCE.startCash, sale);
+  assert.equal(b.cash - BALANCE.startCash - 80, sale * 1.5);
 });
 
 test('stakes stack: higher payroll, half the cash at IPO', () => {
@@ -93,7 +94,7 @@ test('growth push: payroll +20% and the next hire is free', () => {
   assert.equal(s.payroll.amount, Math.round((s.payroll.base * 1.2) / 10) * 10);
   assert.equal(s.freeHires, 1);
   s = { ...s, phase: 'draft', offers: [{ kind: 'card', id: 'detector' }] };
-  assert.equal(offerPrice({ kind: 'card', id: 'detector' }, s), 0);
+  assert.equal(offerPrice({ kind: 'card', id: 'cro' }, s), 0);
   const cash = s.cash;
   s = step(s, { type: 'draft', pick: 0, slot: 0 });
   assert.equal(s.cash, cash);
@@ -131,7 +132,7 @@ test('PR blitz costs cash and cools Heat', () => {
 test('hiring fair: hires 40% cheaper, payroll +10%', () => {
   const s = step(withPlans(['steady', 'fair', 'lean']), { type: 'plan', id: 'fair' });
   assert.equal(s.payroll.amount, Math.round((s.payroll.base * 1.1) / 10) * 10);
-  assert.equal(offerPrice({ kind: 'card', id: 'detector' }, s), Math.round(((BALANCE.prices.rare as number) * 0.6) / 5) * 5);
+  assert.equal(offerPrice({ kind: 'card', id: 'cro' }, s), Math.round(((BALANCE.prices.rare as number) * 0.6) / 5) * 5);
 });
 
 // ---------------------------------------------------------------- crises

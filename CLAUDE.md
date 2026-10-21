@@ -90,9 +90,15 @@ You must look at what you build before calling it done.
 
 Hard mode is the design: every decision counts from day 1. Hires cost cash (common $40, uncommon $85,
 rare $160, excuse $45), rerolls cost $20 and rise $10 each time in the same shop. Start cash $120, first
-payroll $700, payroll grows x1.55 per cycle. Latest 10,000-game run per bot is in `design/balance-v2.txt`.
+payroll $760, payroll grows x1.6 per cycle. Latest 10,000-game run per bot is in `design/balance-v4.txt`
+(`pnpm bots`, runs on every core in ~2.5 min; `pnpm --filter @firm/bots trace SEED BOT` logs one run).
+
+Scoring is Balatro's: traders pay fees (blue chips) in reading order, then every card with a mult effect
+fires in reading order (+Mult adds, xMult multiplies). Trust sets the starting mult. Take = fees x mult,
+minus chargebacks. Rare cards are one of a kind on the book. `expectedTake`/`previewPlacement` score a grid
+with the real rules (bots and the placement preview both use them). Every tunable number is in `BALANCE`.
 Targets: careless play dies at the first payroll (~day 5), always-pay ~10, always-deny ~15, smart ~20
-with best runs past 40. No cheap strategy may match smart play.
+with best runs past 40. No cheap strategy may match smart play on days survived.
 
 ## Run structure
 

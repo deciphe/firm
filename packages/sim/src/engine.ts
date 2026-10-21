@@ -5,7 +5,7 @@ import { CRISES, CRISIS_EVERY, FOUNDERS, PLANS } from './run.ts';
 import type { RunOptions } from './run.ts';
 import type { Rng } from './rng.ts';
 import type {
-  Action, Candle, CardInstance, CardResult, FeedPost, GameState, Offer, Tone,
+  Action, Candle, CardInstance, CardResult, FeedPost, GameState, Offer, ScoreEvent, Tone,
 } from './types.ts';
 import { CANDLES } from './types.ts';
 
@@ -16,8 +16,8 @@ export const BALANCE = {
   startCash: 120,
   startTrust: 3,
   cycleDays: 5,
-  payrollStart: 700,
-  payrollGrowth: 1.55,
+  payrollStart: 760,
+  payrollGrowth: 1.6,
   maxTrust: 5,
   maxHeat: 100,
   heatDecay: 2,
@@ -28,9 +28,22 @@ export const BALANCE = {
   prices: { common: 40, uncommon: 85, rare: 160, excuse: 45 } as Record<string, number>,
   rerollBase: 20,
   rerollStep: 10,
-  severance: 100,
+  /** Cost to let anyone go, or to hire over someone. */
+  severance: 30,
   baseForecast: { chop: 0.5, up: 0.175, down: 0.175, news: 0.15 } as Record<Candle, number>,
   forecastBump: 0.15,
+  /** Trust for honouring a payout (Grinders build more). */
+  payTrust: 0.15,
+  payTrustGrinder: 0.25,
+  /** Flash sale: cash = base + step x cycle, and the Trust it burns. */
+  flashBase: 100,
+  flashStep: 80,
+  flashTrust: 0.3,
+  /** Denying a clean trader with an excuse. */
+  denyTrust: 0.9,
+  denyHeat: 12,
+  /** Mult gained or lost per point of Trust away from 3. */
+  trustSlope: 0.3,
 };
 
 const SIZE = BALANCE.cols * BALANCE.rows;
@@ -135,15 +148,21 @@ export function liability(s: GameState): number {
   return Math.round(total);
 }
 
+/**
+ * What a buyer would pay for the firm (the score): 20 days of recent take scaled by reputation squared, half
+ * of everything ever paid to traders (the payout counter sells the firm), a quarter of the cash on hand, less
+ * what the funded book could claim. A firm that stiffs everyone is worth less than a smaller honest one.
+ */
 export function valuation(s: GameState): number {
   const recent = s.stats.incomeHistory.slice(-5);
   const avg = recent.length ? recent.reduce((a, b) => a + b, 0) / recent.length : 0;
-  return Math.max(0, Math.round(s.cash + 15 * avg * (s.trust / 3) - liability(s)));
+  const rep = (s.trust / 3) ** 2;
+  return Math.max(0, Math.round(20 * Math.max(0, avg) * rep + 0.5 * s.stats.paid + 0.25 * s.cash - liability(s)));
 }
 
-/** Trust 3 = x1.0 fees, 5 = x1.4, 1 = x0.6, 0 = x0.4. */
+/** The day's starting mult. Trust 3 = x1.0, 5 = x1.6, 1 = x0.4, 0 = x0.1. */
 export function trustMultiplier(trust: number): number {
-  return Math.round((0.4 + 0.2 * trust) * 100) / 100;
+  return Math.round((1 + BALANCE.trustSlope * (trust - 3)) * 100) / 100;
 }
 
 /** Price of an offer. Hidden fraud is priced like the ordinary customer it pretends to be. */
@@ -247,6 +266,9 @@ export function legalActions(s: GameState): Action[] {
     case 'dead':
       break;
   }
+  if ((s.phase === 'morning' || s.phase === 'draft') && s.cash >= BALANCE.severance) {
+    s.grid.forEach((c, i) => { if (c) out.push({ type: 'release', slot: i }); });
+  }
   return out;
 }
 
@@ -288,6 +310,10 @@ export function step(prev: GameState, action: Action): GameState {
       s.rerolls += 1;
       s.offers = rollOffers(s, rng);
       break;
+    case 'release':
+      need(s.phase === 'morning' || s.phase === 'draft', 'let people go in the morning or while hiring');
+      release(s, action.slot);
+      break;
   }
   s.rng = rng.state();
   return s;
@@ -299,54 +325,64 @@ function need(ok: boolean, why: string): void {
 
 // ------------------------------------------------------------------ the day
 
-function resolveDay(s: GameState, rng: Rng): void {
-  const candle = rng.weighted(CANDLES.map((c) => [c, s.forecast[c]] as const));
+/** Everything one day of scoring produces, before it is applied to the run. */
+export interface DayScore {
+  outcomes: (TraderOutcome | null)[];
+  results: CardResult[];
+  events: ScoreEvent[];
+  fees: number;
+  clawback: number;
+  baseMult: number;
+  mult: number;
+  take: number;
+  heat: number;
+  /** uids that reached their payout threshold today (and are not stalled). */
+  requests: number[];
+  spawns: { index: number; defId: string }[];
+}
+
+/**
+ * Score one day on a grid: traders pay fees in reading order, then every card with a mult effect fires in
+ * reading order. Take = fees x mult - clawbacks. Mutates the grid's cards (progress, reveals, upsell
+ * bonuses), so previews pass a copy.
+ */
+export function scoreDay(s: GameState, grid: (CardInstance | null)[], candle: Candle, rng: Rng): DayScore {
   const spawns: { index: number; defId: string }[] = [];
   const reveal = (c: CardInstance): void => { c.revealed = true; };
-  const countOnGrid = (id: string): number => s.grid.filter((c) => c?.def === id).length;
-
-  for (const c of s.grid) if (c) c.age += 1;
-
+  const countOnGrid = (id: string): number => grid.filter((c) => c?.def === id).length;
+  const slots = (index: number, outcomes: (TraderOutcome | null)[]): NeighborSlot[] =>
+    neighborsOf(index).map((n): NeighborSlot => ({ index: n, card: grid[n] ?? null, outcome: outcomes[n] ?? null }));
   const auraCtx = (index: number, card: CardInstance, outcomes: (TraderOutcome | null)[]): AuraCtx => ({
     candle, rng, self: card, selfIndex: index,
-    neighbors: neighborsOf(index).map((n): NeighborSlot => ({ index: n, card: s.grid[n] ?? null, outcome: outcomes[n] ?? null })),
-    row: rowOf(s.grid, index),
-    grid: s.grid,
-    spawn: (i, defId) => { if (!s.grid[i] && !spawns.some((sp) => sp.index === i)) spawns.push({ index: i, defId }); },
+    neighbors: slots(index, outcomes),
+    row: rowOf(grid, index),
+    grid,
+    spawn: (i, defId) => { if (!grid[i] && !spawns.some((sp) => sp.index === i)) spawns.push({ index: i, defId }); },
     reveal,
   });
 
   const noOutcomes: (TraderOutcome | null)[] = new Array(SIZE).fill(null);
-  s.grid.forEach((c, i) => { if (c) cardDef(c.def).preDay?.(auraCtx(i, c, noOutcomes)); });
+  grid.forEach((c, i) => { if (c) cardDef(c.def).preDay?.(auraCtx(i, c, noOutcomes)); });
 
-  const outcomes: (TraderOutcome | null)[] = s.grid.map((c, i) => {
+  const outcomes: (TraderOutcome | null)[] = grid.map((c, i) => {
     if (!c) return null;
     const def = cardDef(c.def);
     if (def.kind !== 'trader' || !def.onDay) return null;
-    return def.onDay({ candle, rng, card: c, neighbors: neighborsOf(i).map((n) => s.grid[n] ?? null), countOnGrid });
+    return def.onDay({ candle, rng, card: c, neighbors: neighborsOf(i).map((n) => grid[n] ?? null), countOnGrid });
   });
   const baseCash = outcomes.map((o) => o?.cash ?? 0);
+  grid.forEach((c, i) => { if (c) cardDef(c.def).aura?.(auraCtx(i, c, outcomes)); });
 
-  s.grid.forEach((c, i) => { if (c) cardDef(c.def).aura?.(auraCtx(i, c, outcomes)); });
-
-  // Global fee multiplier: customers spend more with a firm they trust; Proof Walls reward honoured payouts.
-  const proofWalls = countOnGrid('proofwall');
-  const feeMul = trustMultiplier(s.trust) * (1 + 0.04 * s.stats.payoutsPaid * proofWalls) * (crisisIs(s, 'pricewar') ? 0.75 : 1);
-  s.grid.forEach((c, i) => {
-    const o = outcomes[i];
-    if (c && o && o.cash > 0) o.cash = Math.round((o.cash + c.bonus) * feeMul);
-    if (c && o?.upsell) c.bonus += o.upsell;
-  });
-
-  let income = 0;
+  const feeMul = crisisIs(s, 'pricewar') ? 0.75 : 1;
   let heat = 0;
-  const results: CardResult[] = [];
   const requests: number[] = [];
-  s.grid.forEach((c, i) => {
+  const results: CardResult[] = [];
+  grid.forEach((c, i) => {
     const o = outcomes[i];
     if (!c || !o) return;
     const def = cardDef(c.def);
-    income += o.cash;
+    if (o.cash > 0) o.cash = Math.round((o.cash + c.bonus) * feeMul);
+    if (o.upsell) c.bonus += o.upsell;
     heat += o.heat ?? 0;
     if (crisisIs(s, 'bankrun') && candle !== 'chop' && o.progress > 0) o.progress += 1;
     c.progress = o.reset ? 0 : Math.max(0, c.progress + o.progress);
@@ -357,20 +393,50 @@ function resolveDay(s: GameState, rng: Rng): void {
     results.push({ uid: c.uid, base: baseCash[i] ?? 0, cash: o.cash, progress: o.progress });
   });
 
+  // The scoring sequence: every fee first, then every mult.
+  const baseMult = trustMultiplier(s.trust);
+  const events: ScoreEvent[] = [];
+  let fees = 0, clawback = 0, mult = baseMult;
+  grid.forEach((c, i) => {
+    const o = outcomes[i];
+    if (!c || !o || o.cash === 0) return;
+    if (o.cash > 0) fees += o.cash; else clawback += o.cash;
+    events.push({ uid: c.uid, fees: o.cash, totalFees: fees, mult });
+  });
+  grid.forEach((c, i) => {
+    if (!c) return;
+    const fx = cardDef(c.def).mult?.({
+      candle, self: c, selfIndex: i, neighbors: slots(i, outcomes), grid, outcomes, requests: requests.length, payoutsPaid: s.stats.payoutsPaid,
+    });
+    if (!fx || (!fx.add && (fx.times ?? 1) === 1)) return;
+    if (fx.add) mult += fx.add;
+    if (fx.times) mult *= fx.times;
+    mult = Math.round(mult * 100) / 100;
+    events.push({ uid: c.uid, ...(fx.add ? { add: fx.add } : {}), ...(fx.times ? { times: fx.times } : {}), totalFees: fees, mult });
+  });
+  const take = Math.round(fees * mult) + clawback;
+  return { outcomes, results, events, fees, clawback, baseMult, mult, take, heat, requests, spawns };
+}
+
+function resolveDay(s: GameState, rng: Rng): void {
+  const candle = rng.weighted(CANDLES.map((c) => [c, s.forecast[c]] as const));
+  for (const c of s.grid) if (c) c.age += 1;
+  const day = scoreDay(s, s.grid, candle, rng);
+
   const spawned: number[] = [];
-  for (const sp of spawns) {
+  for (const sp of day.spawns) {
     const card = newCard(s, sp.defId);
     s.grid[sp.index] = card;
     spawned.push(card.uid);
   }
 
-  const supportCount = countOnGrid('support');
-  s.cash += income;
-  addHeat(s, heat);
+  const supportCount = s.grid.filter((c) => c?.def === 'support').length;
+  s.cash += day.take;
+  addHeat(s, day.heat);
   s.heat = clamp(s.heat - heatDecay(s) - supportCount, 0, BALANCE.maxHeat);
-  s.stats.incomeHistory.push(income);
+  s.stats.incomeHistory.push(day.take);
 
-  for (const uid of requests) {
+  for (const uid of day.requests) {
     const found = findCard(s, uid);
     if (!found) continue;
     const def = cardDef(found.card.def);
@@ -378,14 +444,37 @@ function resolveDay(s: GameState, rng: Rng): void {
     s.queue.push({ uid, amount });
   }
 
-  s.lastReport = { day: s.day, candle, income, results, requests: requests.length, spawned, movedLive: [] };
+  s.lastReport = {
+    day: s.day, candle, income: day.take, fees: day.fees, clawback: day.clawback, baseMult: day.baseMult, mult: day.mult,
+    events: day.events, results: day.results, requests: day.requests.length, spawned, movedLive: [],
+  };
 
-  if (candle !== 'chop' && requests.length >= 3) {
-    post(s, '@thetapewatch', `${candle === 'news' ? 'News spike' : 'Big trend day'}. ${requests.length} payout requests just hit one firm's desk.`, 'neutral');
+  if (candle !== 'chop' && day.requests.length >= 3) {
+    post(s, '@thetapewatch', `${candle === 'news' ? 'News spike' : 'Big trend day'}. ${day.requests.length} payout requests just hit one firm's desk.`, 'neutral');
   }
 
   if (s.queue.length > 0) s.phase = 'payout';
   else enterDraft(s, rng);
+}
+
+/**
+ * What a grid is expected to take in a day, averaged over the standard candle odds. Pure: works on copies
+ * with a fixed RNG, so previews and bots see the same number every time.
+ */
+export function expectedTake(s: GameState, grid: (CardInstance | null)[] = s.grid): number {
+  let total = 0;
+  for (const candle of CANDLES) {
+    const copy = grid.map((c) => (c ? { ...c } : null));
+    total += BALANCE.baseForecast[candle] * scoreDay(s, copy, candle, makeRng(0x5eed)).take;
+  }
+  return Math.round(total);
+}
+
+/** Expected daily take if `defId` were placed at `slot` (replacing whatever is there). */
+export function previewPlacement(s: GameState, defId: string, slot: number): number {
+  const grid = s.grid.map((c) => (c ? { ...c } : null));
+  grid[slot] = { uid: -1, def: defId, progress: 0, age: 0, revealed: false, payouts: 0, stalls: 0, stalledUntil: 0, bonus: 0 };
+  return expectedTake(s, grid);
 }
 
 // ------------------------------------------------------------------ payouts
@@ -407,7 +496,7 @@ function decidePayout(s: GameState, rng: Rng, decision: 'pay' | 'stall' | 'deny'
     s.cash -= req.amount;
     s.stats.paid += req.amount;
     s.stats.payoutsPaid += 1;
-    s.trust = clamp(s.trust + (card.def === 'grinder' ? 0.15 : 0.08), 0, BALANCE.maxTrust);
+    s.trust = clamp(s.trust + (card.def === 'grinder' ? BALANCE.payTrustGrinder : BALANCE.payTrust), 0, BALANCE.maxTrust);
     post(s, rng.pick(['@fundedfrank', '@grind_guy', '@nq_nate']), `Got paid $${req.amount.toLocaleString('en-US')} today. Firm actually pays.`, 'good');
     if (card.def === 'vet') {
       card.payouts += 1;
@@ -476,8 +565,8 @@ function decidePayout(s: GameState, rng: Rng, decision: 'pay' | 'stall' | 'deny'
         addHeat(s, 18 * heatMul);
         post(s, '@influencer_ty', 'GOING LIVE IN 10. This firm just denied me. Bring popcorn.', 'bad');
       } else {
-        loseTrust(s, 0.6 * reuse);
-        addHeat(s, 10 * heatMul);
+        loseTrust(s, BALANCE.denyTrust * reuse);
+        addHeat(s, BALANCE.denyHeat * heatMul);
         post(s, rng.pick(['@fundedfrank', '@nq_nate', '@grind_guy']), `Denied $${req.amount.toLocaleString('en-US')} for "${ex.name}". I followed every rule.`, 'bad');
       }
     }
@@ -506,6 +595,8 @@ export function rollOffers(s: GameState, rng: Rng): Offer[] {
   const entries: (readonly [Offer, number])[] = [];
   for (const def of Object.values(CARDS)) {
     if (def.draftWeight <= 0) continue;
+    // Rares are one of a kind: never offered while one is already on the book.
+    if (def.rarity === 'rare' && s.grid.some((c) => c?.def === def.id)) continue;
     let w = def.draftWeight;
     if (def.kind === 'staff') w *= lowTrust ? 0.4 : highTrust ? 1.3 : 1;
     if (def.rarity === 'rare') w *= lowTrust ? 0.3 : highTrust ? 2 : 1;
@@ -560,17 +651,31 @@ function draft(s: GameState, rng: Rng, pick: number | null, slot?: number): void
   endDay(s, rng);
 }
 
+/** Let someone go: severance, and closing a funded account is noticed. */
+function release(s: GameState, slot: number): void {
+  const c = s.grid[slot];
+  need(!!c, 'nobody in that slot');
+  need(s.cash >= BALANCE.severance, 'cannot afford severance');
+  s.cash -= BALANCE.severance;
+  s.grid[slot] = null;
+  s.queue = s.queue.filter((q) => q.uid !== c?.uid);
+  if (c?.def === 'vet') {
+    loseTrust(s, 0.2);
+    post(s, '@chartcrime', 'Funded account closed out of nowhere. Seen this before.', 'bad');
+  }
+}
+
 // ------------------------------------------------------------------ morning moves
 
 function flashSale(s: GameState, rng: Rng): void {
   s.flashSaleCycle = s.payroll.cycle;
-  s.cash += Math.round((100 + 100 * s.payroll.cycle) * (s.founder === 'hustler' ? 1.5 : 1));
+  s.cash += Math.round((BALANCE.flashBase + BALANCE.flashStep * s.payroll.cycle) * (s.founder === 'hustler' ? 1.5 : 1));
   const free = emptySlots(s);
   for (let k = 0; k < 3 && free.length > 0; k++) {
     const i = free.splice(rng.int(free.length), 1)[0] as number;
-    s.grid[i] = newCard(s, rng.weighted([['hedger', 3], ['ghost', 2], ['chargeback', 2], ['retail', 2]] as const));
+    s.grid[i] = newCard(s, rng.weighted([['bot', 4], ['hedger', 3], ['chargeback', 2], ['ghost', 1]] as const));
   }
-  loseTrust(s, 0.25);
+  loseTrust(s, BALANCE.flashTrust);
   addHeat(s, 6);
   post(s, '@propdrama_wire', '90% OFF everything. Somebody needs cash fast.', 'neutral');
 }

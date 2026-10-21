@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  BALANCE, CARDS, IllegalAction, findCard, legalActions, newRun, offerPrice, step, valuation,
+  BALANCE, CARDS, IllegalAction, expectedTake, makeRng, rollOffers, findCard, legalActions, newRun, offerPrice, previewPlacement, step, valuation,
 } from '../src/index.ts';
 import type { Candle, CardInstance, GameState } from '../src/index.ts';
 
@@ -76,7 +76,7 @@ test('rerolls get more expensive each time in the same shop', () => {
 
 test('hidden fraud is priced like an ordinary customer', () => {
   assert.equal(offerPrice({ kind: 'card', id: 'hedger' }), BALANCE.prices.common);
-  assert.equal(offerPrice({ kind: 'card', id: 'detector' }), BALANCE.prices.rare);
+  assert.equal(offerPrice({ kind: 'card', id: 'cro' }), BALANCE.prices.rare);
 });
 
 test('the Payout Desk always has a way out, even broke with no excuses', () => {
@@ -132,17 +132,28 @@ test('a flash sale brings cash and three disguised customers, once per cycle', (
   let s = setup({ 0: 'gambler' }, 'chop');
   const cash = s.cash;
   s = step(s, { type: 'flashSale' });
-  assert.equal(s.cash, cash + 200);
+  assert.equal(s.cash, cash + BALANCE.flashBase + BALANCE.flashStep);
   assert.equal(s.grid.filter(Boolean).length, 4);
   assert.ok(s.trust < BALANCE.startTrust);
   assert.throws(() => step(s, { type: 'flashSale' }), IllegalAction);
 });
 
-test('valuation rewards cash and trust and subtracts what the book could claim', () => {
+test('valuation is recent take scaled by reputation, plus payouts honoured, plus some cash, less liability', () => {
   const s = setup({ 0: card(1, 'grinder', { progress: 5 }) });
   s.cash = 1000;
+  s.stats.paid = 600;
   s.stats.incomeHistory = [100, 100, 100, 100, 100];
-  assert.equal(valuation(s), 1000 + 1500 - 150);
+  assert.equal(valuation(s), 2000 + 300 + 250 - 150);
+  s.trust = 1.5;
+  assert.equal(valuation(s), 500 + 300 + 250 - 150);
+});
+
+test('an honest firm is worth more than a richer one that stiffs its traders', () => {
+  const honest = setup({});
+  honest.cash = 500; honest.trust = 4; honest.stats.paid = 3000; honest.stats.incomeHistory = [300, 300, 300, 300, 300];
+  const stiff = setup({});
+  stiff.cash = 3500; stiff.trust = 1.5; stiff.stats.paid = 0; stiff.stats.incomeHistory = [300, 300, 300, 300, 300];
+  assert.ok(valuation(honest) > valuation(stiff));
 });
 
 // ---------------------------------------------------------------- traders
@@ -222,10 +233,16 @@ test('Bulk Order fills up to three empty slots with bots', () => {
 
 // ---------------------------------------------------------------- staff
 
-test('Affiliate adds 50% to adjacent gamblers', () => {
-  const s = tap(setup({ 0: 'gambler', 1: 'affiliate' }, 'chop'));
-  assert.equal(incomeOf(s, 100), 45);
-  assert.equal(s.lastReport?.results.find((r) => r.uid === 100)?.base, 30);
+test('Affiliate adds +0.15 Mult for each adjacent paying gambler', () => {
+  const s = tap(setup({ 0: 'gambler', 5: 'retail', 1: 'affiliate', 3: 'grinder' }, 'chop'));
+  assert.equal(s.lastReport?.mult, 1.3);
+  assert.equal(s.lastReport?.fees, 30 + 26 + 12);
+  assert.equal(s.lastReport?.income, Math.round(68 * 1.3));
+});
+
+test('Affiliate ignores gamblers that paid nothing', () => {
+  const s = tap(setup({ 0: 'trendbro', 1: 'affiliate' }, 'up'));
+  assert.equal(s.lastReport?.mult, 1);
 });
 
 test('Discord Mod adds 10 to adjacent grinders', () => {
@@ -257,13 +274,14 @@ test('Sales Closer fills an empty neighbour every day', () => {
   assert.equal(s.grid.filter(Boolean).length, 2);
 });
 
-test('Trust multiplies fees', () => {
+test('Trust sets the starting mult', () => {
   const low = setup({ 0: 'gambler' }, 'chop');
   low.trust = 1;
   const high = setup({ 0: 'gambler' }, 'chop');
   high.trust = 5;
-  assert.equal(incomeOf(tap(low), 100), 18);
-  assert.equal(incomeOf(tap(high), 100), 42);
+  assert.equal(tap(low).lastReport?.income, 12);
+  assert.equal(tap(high).lastReport?.income, 48);
+  assert.equal(tap(high).lastReport?.baseMult, 1.6);
 });
 
 test('Upsell Desk permanently raises adjacent fees', () => {
@@ -276,18 +294,92 @@ test('Upsell Desk permanently raises adjacent fees', () => {
   assert.equal(incomeOf(s, 100), 31);
 });
 
-test('Payout Proof Wall grows fees with every honoured payout', () => {
+test('Payout Proof Wall multiplies the mult by 0.05 per honoured payout', () => {
   const s = setup({ 0: 'gambler', 19: 'proofwall' }, 'chop');
-  s.stats.payoutsPaid = 10;
-  assert.equal(incomeOf(tap(s), 100), 42);
+  s.stats.payoutsPaid = 20;
+  const r = tap(s).lastReport;
+  assert.equal(r?.mult, 2);
+  assert.equal(r?.income, 60);
+  const none = tap(setup({ 0: 'gambler', 19: 'proofwall' }, 'chop')).lastReport;
+  assert.equal(none?.mult, 1);
+});
+
+test('Quant Desk adds +1 Mult on chop days only', () => {
+  assert.equal(tap(setup({ 0: 'gambler', 19: 'quantdesk' }, 'chop')).lastReport?.mult, 2);
+  assert.equal(tap(setup({ 0: 'gambler', 19: 'quantdesk' }, 'up')).lastReport?.mult, 1);
+});
+
+test('Hype Team adds +0.05 Mult per paying customer anywhere', () => {
+  const s = tap(setup({ 0: 'gambler', 4: 'gambler', 15: 'grinder', 19: 'hypeteam', 10: 'influencer' }, 'chop'));
+  assert.equal(s.lastReport?.mult, 1.15);
+});
+
+test('Chief Risk Officer doubles the mult when nobody asks for a payout', () => {
+  assert.equal(tap(setup({ 0: 'gambler', 19: 'cro' }, 'chop')).lastReport?.mult, 2);
+  const due = tap(setup({ 0: card(100, 'grinder', { progress: 9 }), 19: 'cro' }, 'chop'));
+  assert.equal(due.lastReport?.requests, 1);
+  assert.equal(due.lastReport?.mult, 1);
+});
+
+test('Risk Analyst adds +0.2 Mult per exposed fraud in its own row', () => {
+  const s = tap(setup({ 0: 'hedger', 1: 'riskanalyst', 2: 'ghost', 10: card(103, 'chargeback', { revealed: true }) }, 'chop'));
+  assert.equal(s.lastReport?.mult, 1.4);
+});
+
+test('Funded Vets pay no fees but add +0.1 Mult each', () => {
+  const s = tap(setup({ 0: 'gambler', 5: card(101, 'vet', { revealed: true }), 10: card(102, 'vet', { revealed: true }) }, 'chop'));
+  assert.equal(s.lastReport?.fees, 30);
+  assert.equal(s.lastReport?.mult, 1.2);
+});
+
+test('scoring fires every fee in reading order, then every mult', () => {
+  const r = tap(setup({ 7: 'affiliate', 2: 'gambler', 12: 'gambler', 19: 'quantdesk' }, 'chop')).lastReport;
+  const kinds = r?.events.map((e) => (e.fees !== undefined ? 'fees' : 'mult'));
+  assert.deepEqual(kinds, ['fees', 'fees', 'mult', 'mult']);
+  assert.deepEqual(r?.events.map((e) => e.mult), [1, 1, 1.3, 2.3]);
+  assert.equal(r?.income, Math.round(60 * 2.3));
+});
+
+test('chargebacks are clawed back after the mult', () => {
+  const r = tap(setup({ 0: 'gambler', 4: 'chargeback', 19: 'quantdesk' }, 'news')).lastReport;
+  assert.equal(r?.fees, 40);
+  assert.equal(r?.clawback, -70);
+  assert.equal(r?.income, 40 - 70);
+});
+
+test('expected take is pure and matches the forecast mix', () => {
+  const s = setup({ 0: 'gambler', 1: 'affiliate' }, 'chop');
+  const before = JSON.stringify(s);
+  const e = expectedTake(s);
+  assert.equal(JSON.stringify(s), before);
+  assert.equal(e, expectedTake(s));
+  assert.ok(e > 30 && e < 50);
+});
+
+test('placement preview prices a slot by the expected take', () => {
+  const s = setup({ 0: 'gambler', 5: 'gambler', 6: 'gambler' }, 'chop');
+  assert.ok(previewPlacement(s, 'affiliate', 1) > previewPlacement(s, 'affiliate', 19));
+  assert.equal(s.grid[1], null);
+});
+
+test('letting someone go costs severance, and closing a Funded Vet costs Trust', () => {
+  let s = setup({ 0: 'gambler', 1: card(101, 'vet', { revealed: true }) }, 'chop');
+  s.cash = 200;
+  s = step(s, { type: 'release', slot: 0 });
+  assert.equal(s.grid[0], null);
+  assert.equal(s.cash, 200 - BALANCE.severance);
+  const t = s.trust;
+  s = step(s, { type: 'release', slot: 1 });
+  assert.ok(s.trust < t);
+  assert.throws(() => step(s, { type: 'release', slot: 1 }), IllegalAction);
 });
 
 test('Lawyer halves Heat from denials', () => {
   const base = setup({ 0: card(100, 'grinder', { progress: 10 }) }, 'chop');
   const withLawyer = setup({ 0: card(100, 'grinder', { progress: 10 }), 19: 'lawyer' }, 'chop');
   const deny = (s: GameState): number => step(tap(s), { type: 'payout', decision: 'deny', excuse: 'terms' }).heat;
-  assert.equal(deny(base), 10);
-  assert.equal(deny(withLawyer), 5);
+  assert.equal(deny(base), BALANCE.denyHeat);
+  assert.equal(deny(withLawyer), BALANCE.denyHeat / 2);
 });
 
 // ---------------------------------------------------------------- payout desk
@@ -333,8 +425,8 @@ test('denying a clean trader costs Trust and Heat', () => {
   let s = tap(setup({ 0: card(100, 'grinder', { progress: 9 }) }, 'chop'));
   s = step(s, { type: 'payout', decision: 'deny', excuse: 'terms' });
   assert.equal(findCard(s, 100), null);
-  assert.ok(Math.abs(s.trust - (BALANCE.startTrust - 0.6)) < 1e-9);
-  assert.equal(s.heat, 10);
+  assert.ok(Math.abs(s.trust - (BALANCE.startTrust - BALANCE.denyTrust)) < 1e-9);
+  assert.equal(s.heat, BALANCE.denyHeat);
 });
 
 test('denying exposed fraud with evidence builds Trust', () => {
@@ -367,6 +459,13 @@ test('denying an Influencer is a disaster', () => {
   s = step(s, { type: 'payout', decision: 'deny', excuse: 'terms' });
   assert.ok(s.trust <= BALANCE.startTrust - 1);
   assert.equal(s.heat, 18);
+});
+
+test('rare staff are one of a kind: never offered while one is on the book', () => {
+  const s = setup({ 0: 'cro', 1: 'proofwall' }, 'chop');
+  for (let k = 0; k < 200; k++) {
+    for (const o of rollOffers(s, makeRng(k))) assert.ok(o.id !== 'cro' && o.id !== 'proofwall');
+  }
 });
 
 test('every draftable card and excuse can actually be offered', () => {

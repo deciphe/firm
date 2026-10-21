@@ -41,6 +41,27 @@ export interface AuraCtx {
   reveal: (card: CardInstance) => void;
 }
 
+/** What a card adds to today's mult, after every fee is counted. */
+export interface MultFx {
+  /** +Mult (added). */
+  add?: number;
+  /** ×Mult (multiplied, after this card's add). */
+  times?: number;
+}
+
+export interface MultCtx {
+  candle: Candle;
+  self: CardInstance;
+  selfIndex: number;
+  neighbors: NeighborSlot[];
+  grid: readonly (CardInstance | null)[];
+  outcomes: readonly (TraderOutcome | null)[];
+  /** Payout requests raised today. */
+  requests: number;
+  /** Payouts honoured so far this run. */
+  payoutsPaid: number;
+}
+
 export interface CardDef {
   id: string;
   name: string;
@@ -57,14 +78,21 @@ export interface CardDef {
   onDay?: (ctx: TraderCtx) => TraderOutcome;
   /** Runs before traders resolve (reveals). */
   preDay?: (ctx: AuraCtx) => void;
-  /** Runs after traders resolve; may change neighbours' outcomes. */
+  /** Runs after traders resolve; may change neighbours' fees and progress. */
   aura?: (ctx: AuraCtx) => void;
+  /** Fires after all fees are in: adds to or multiplies today's mult. */
+  mult?: (ctx: MultCtx) => MultFx | null;
 }
 
 const isTrend = (c: Candle): boolean => c === 'up' || c === 'down';
 const byCandle = (c: Candle, v: Record<Candle, number>): number => v[c];
 
 const T = 10; // default progress needed for a payout request
+
+/** Customers an Affiliate works on (hidden fraud counts while it still looks like a New Trader). */
+const AFFILIATE_TARGETS = ['gambler', 'trendbro', 'retail', 'hedger', 'ghost', 'chargeback'];
+const paid = (o: TraderOutcome | null | undefined): boolean => !!o && o.cash > 0;
+const round2 = (v: number): number => Math.round(v * 100) / 100;
 
 export const CARDS: Record<string, CardDef> = {
   // ---------------------------------------------------------------- traders
@@ -174,29 +202,31 @@ export const CARDS: Record<string, CardDef> = {
   },
   vet: {
     id: 'vet', name: 'Funded Vet', kind: 'trader', rarity: 'common', draftWeight: 0,
-    blurb: 'Already paid once. Pays nothing, keeps requesting. Moves to live after 3 payouts.',
+    blurb: 'Already paid once. Pays no fees, but their payout certs sell your firm: +0.1 Mult. Keeps requesting; goes live after 3 payouts.',
     threshold: T, payout: 450,
     onDay: ({ candle }) => ({ cash: 0, progress: isTrend(candle) ? 3 : 1 }),
+    mult: () => ({ add: 0.1 }),
   },
 
   // ---------------------------------------------------------------- staff
   affiliate: {
     id: 'affiliate', name: 'Affiliate', kind: 'staff', rarity: 'uncommon', draftWeight: 4,
-    blurb: '+50% fees from adjacent Gamblers, Trend Bros and New Traders.',
-    aura: ({ neighbors }) => {
-      for (const n of neighbors) {
-        if (!n.outcome || !n.card || n.outcome.cash <= 0) continue;
-        if (['gambler', 'trendbro', 'retail', 'hedger', 'ghost', 'chargeback'].includes(n.card.def)) {
-          n.outcome.cash = Math.round(n.outcome.cash * 1.5);
-        }
-      }
+    blurb: '+0.15 Mult for each adjacent Gambler, Trend Bro or New Trader who paid today.',
+    mult: ({ neighbors }) => {
+      const n = neighbors.filter((x) => x.card && AFFILIATE_TARGETS.includes(x.card.def) && paid(x.outcome)).length;
+      return n ? { add: round2(0.15 * n) } : null;
     },
   },
   riskanalyst: {
     id: 'riskanalyst', name: 'Risk Analyst', kind: 'staff', rarity: 'uncommon', draftWeight: 3,
-    blurb: 'Exposes Hedgers, Borrowed IDs, bots and chargebacks in its row.',
+    blurb: 'Exposes Hedgers, Borrowed IDs, bots and chargebacks in its row. +0.2 Mult for each fraud it has exposed.',
     preDay: ({ row, reveal }) => {
       for (const c of row) if (c && CARDS[c.def]?.fraud) reveal(c);
+    },
+    mult: ({ grid, selfIndex }) => {
+      const r = Math.floor(selfIndex / 5);
+      const n = grid.slice(r * 5, r * 5 + 5).filter((c) => c && c.revealed && CARDS[c.def]?.fraud).length;
+      return n ? { add: round2(0.2 * n) } : null;
     },
   },
   discordmod: {
@@ -236,7 +266,7 @@ export const CARDS: Record<string, CardDef> = {
     },
   },
   detector: {
-    id: 'detector', name: 'Copy-Trade Detector', kind: 'staff', rarity: 'rare', draftWeight: 2,
+    id: 'detector', name: 'Copy-Trade Detector', kind: 'staff', rarity: 'uncommon', draftWeight: 2,
     blurb: 'Exposes every Copy Ring and bot on the book.',
     preDay: ({ grid, reveal }) => {
       for (const c of grid) if (c && (c.def === 'copyring' || c.def === 'bot')) reveal(c);
@@ -251,11 +281,30 @@ export const CARDS: Record<string, CardDef> = {
   },
   proofwall: {
     id: 'proofwall', name: 'Payout Proof Wall', kind: 'staff', rarity: 'rare', draftWeight: 2,
-    blurb: 'All fees +4% for every payout you have honoured this run.',
+    blurb: '×Mult: +0.05 for every payout you have honoured this run.',
+    mult: ({ payoutsPaid }) => (payoutsPaid > 0 ? { times: round2(1 + 0.05 * payoutsPaid) } : null),
   },
   lawyer: {
-    id: 'lawyer', name: 'Lawyer', kind: 'staff', rarity: 'rare', draftWeight: 2,
+    id: 'lawyer', name: 'Lawyer', kind: 'staff', rarity: 'uncommon', draftWeight: 2,
     blurb: 'Every denial creates half the Heat.',
+  },
+  quantdesk: {
+    id: 'quantdesk', name: 'Quant Desk', kind: 'staff', rarity: 'uncommon', draftWeight: 3,
+    blurb: '+1 Mult on chop days.',
+    mult: ({ candle }) => (candle === 'chop' ? { add: 1 } : null),
+  },
+  hypeteam: {
+    id: 'hypeteam', name: 'Hype Team', kind: 'staff', rarity: 'uncommon', draftWeight: 3,
+    blurb: '+0.05 Mult for every customer on the book who paid today.',
+    mult: ({ outcomes }) => {
+      const n = outcomes.filter(paid).length;
+      return n ? { add: round2(0.05 * n) } : null;
+    },
+  },
+  cro: {
+    id: 'cro', name: 'Chief Risk Officer', kind: 'staff', rarity: 'rare', draftWeight: 2,
+    blurb: '×2 Mult on any day nobody asks for a payout.',
+    mult: ({ requests }) => (requests === 0 ? { times: 2 } : null),
   },
 };
 
